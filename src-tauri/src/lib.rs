@@ -1510,6 +1510,56 @@ fn get_downloads(state: State<'_, AppState>) -> Vec<DownloadEntry> {
 }
 
 #[tauri::command]
+async fn open_downloaded_file(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let path = {
+        let downloads = state
+            .downloads
+            .lock()
+            .map_err(|error| format!("Downloadliste ist gesperrt: {error}"))?;
+        let entry = downloads
+            .iter()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| "Dieser Download ist nicht mehr in der Liste.".to_string())?;
+        if entry.status != "completed" {
+            return Err(
+                "Die Datei kann erst nach abgeschlossenem Download geöffnet werden.".into(),
+            );
+        }
+        PathBuf::from(&entry.path)
+    };
+
+    run_blocking(move || open_downloaded_path(path)).await
+}
+
+fn open_downloaded_path(path: PathBuf) -> Result<(), String> {
+    let path = path
+        .canonicalize()
+        .map_err(|error| format!("Die heruntergeladene Datei wurde nicht gefunden: {error}"))?;
+    if !path.is_file() {
+        return Err("Der Downloadpfad verweist nicht auf eine vorhandene Datei.".into());
+    }
+
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    return Err(
+        "Das Öffnen heruntergeladener Dateien wird auf diesem System nicht unterstützt.".into(),
+    );
+
+    #[cfg(any(target_os = "windows", target_os = "macos", unix))]
+    {
+        command.arg(&path).spawn().map(|_| ()).map_err(|error| {
+            format!("Datei konnte nicht mit der System-App geöffnet werden: {error}")
+        })
+    }
+}
+
+#[tauri::command]
 fn clear_download_history(app: AppHandle<Wry>, state: State<'_, AppState>) -> Result<(), String> {
     let state = state.inner().clone();
     state
@@ -4670,6 +4720,7 @@ pub fn run() {
             set_panel_overlay,
             register_default_browser,
             get_downloads,
+            open_downloaded_file,
             clear_download_history,
             get_quick_shortcuts,
             save_quick_shortcuts,
@@ -4776,3 +4827,4 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+

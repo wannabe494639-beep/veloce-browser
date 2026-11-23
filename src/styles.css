@@ -132,7 +132,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .clear-downloads:hover:not(:disabled) { color: #eeeeF4; background: rgba(255,255,255,.07); }
 .clear-downloads:disabled { opacity: .45; cursor: default; }
 .download-list { display: grid; gap: 1px; max-height: min(420px,calc(100vh - 240px)); overflow: auto; }
-.download-entry { display: flex; align-items: flex-start; gap: 10px; padding: 11px 13px; border-bottom: 1px solid rgba(255,255,255,.045); }
+.download-entry { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 11px 13px; border: 0; border-bottom: 1px solid rgba(255,255,255,.045); color: inherit; background: transparent; text-align: left; cursor: default; }
+.download-entry:enabled { cursor: pointer; }
+.download-entry:enabled:hover { background: rgba(255,255,255,.045); }
+.download-entry:disabled { opacity: .72; }
 .download-state-icon { display: grid; flex: 0 0 29px; place-items: center; width: 29px; height: 29px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.035); }
 .download-state-icon.downloading { color: var(--accent); }
 .download-state-icon.completed { color: #77d7b7; }
@@ -249,3 +252,4 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .settings-nav button { padding-left: 7px; font-size: 9px; }
   .settings-content { padding-right: 7px; padding-left: 7px; }
 }
+
