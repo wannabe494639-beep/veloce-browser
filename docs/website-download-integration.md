@@ -18,6 +18,6 @@ Base44/React button example:
 </a>
 ```
 
-The URL becomes valid after the first `v*` tag build completes and publishes the installer. The workflow in `.github/workflows/release-windows.yml` creates that release on GitHub. To publish an update, update the app version in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, push the changes, and push a matching version tag such as `v0.1.1`.
+The URL becomes valid after the first `v*` tag build completes and publishes the installer. The workflow in `.github/workflows/release-windows.yml` creates that release on GitHub. To publish an update, update the app version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, push the changes, and push a matching version tag such as `v0.1.2`. Each release also includes `VeloceBrowser-Source.zip`, created from the committed source only; it excludes the local WebView profile and saved website credentials.
 
 This is a download integration, not an embedded browser: Veloce is a native Tauri/WebView2 desktop app and cannot run inside the Base44 page. The landing page should offer the installer and link to the source/release notes separately if desired. Windows may show its usual publisher warning because releases are unsigned unless a code-signing certificate is configured.

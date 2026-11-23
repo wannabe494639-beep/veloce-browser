@@ -1,6 +1,6 @@
 [package]
 name = "veloce-browser"
-version = "0.1.0"
+version = "0.1.2"
 description = "Veloce Browser"
 authors = ["Veloce"]
 edition = "2021"

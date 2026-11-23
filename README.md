@@ -18,7 +18,7 @@ Veloce is a new, separate Tauri 2 browser project. It does not modify Astra's so
 - An immediate best-effort pause of inactive, silent tabs. WebView2's native `IsDocumentPlayingAudio` check covers media audio/Web Audio; a small native-script query checks playing video elements. Active audio or video tabs are kept at the normal memory target and are not suspended. When a tab is selected, WebView2 is resumed before it is shown.
 - GPU acceleration and the WebView2 profile's disk cache stay on by default. Veloce does not add `--disable-gpu`, cache-disabling, or experimental startup flags, and the settings UI no longer offers a GPU-off switch.
 - A persistent Downloads toolbar icon and in-app list, fed by Wry/WebView2 start and finish events. Veloce keeps recent filename, local destination, timestamp and final state in its own app data folder; clearing the list does not delete downloaded files. The installed Wry download event surface does not expose reliable byte progress, so active downloads show an indeterminate spinner, never invented percentages. WebView2 chooses the normal download destination.
-- A Windows default-browser registration action under Settings → Allgemein. It registers Veloce's per-user browser capabilities and opens Windows Default Apps settings; Windows still requires the user to select Veloce for HTTP/HTTPS. Any “once” versus “always” choice belongs to Windows/the app that launched the link. Veloce accepts valid HTTP/HTTPS launch arguments and opens them as a tab after session restoration.
+- Windows default-browser support: the NSIS installer registers per-user HTTP/HTTPS ProgIDs, `OpenWithProgids`, and Windows Default Apps capabilities, so Windows can offer Veloce in link/file app pickers. Settings → Allgemein → „Als Standardbrowser festlegen“ opens Veloce's Windows Default Apps page. Windows requires the user to confirm the default and controls any “once” versus “always” choice. Veloce accepts valid HTTP/HTTPS launch arguments and opens them as a tab after session restoration.
 - A separate session-restore switch, Graphite/OLED appearance options and four accent colors.
 - Windows WebView2 extensions: the official uBlock Origin Lite `2026.1116.1650` and SponsorBlock `6.1.7` packages are bundled and installed into Veloce's existing WebView2 profile. Settings report the profile's actual installed/enabled state. Extension functions and Chrome APIs remain subject to the installed WebView2 Runtime.
 - Extensions can be enabled/disabled through WebView2, custom unpacked folders can be checked for manifest permissions and referenced local files before adding, and custom entries can be removed where supported. The bundled extensions can be disabled but are not removable by this manager.
@@ -64,7 +64,7 @@ For YouTube, Veloce leaves requests, filters, player quality and bundled extensi
 
 ## Build
 
-The Windows installer release workflow runs when a `v*` tag is pushed. The website can download the latest setup directly from the release asset without opening GitHub's release page; see [the website download integration](docs/website-download-integration.md). The first link works only after the first tagged release has finished.
+The Windows installer release workflow runs when a `v*` tag is pushed. It attaches both the NSIS installer and a clean source archive made from the tag (not the local WebView profile). The website can download the latest setup directly from the release asset without opening GitHub's release page; see [the website download integration](docs/website-download-integration.md). The stable assets are `VeloceBrowser-Setup-x64.exe` and `VeloceBrowser-Source.zip`.
 
 Install Node.js/npm, Rust stable, and the native Tauri prerequisites for the operating system you are building on. The complete target-specific prerequisites are maintained by the [official Tauri prerequisites guide](https://tauri.app/start/prerequisites/).
 
@@ -82,12 +82,14 @@ npm run tauri:build -- --bundles nsis
 
 On Windows, the resulting NSIS installer is:
 
-`src-tauri/target/release/bundle/nsis/Veloce Browser_0.1.0_x64-setup.exe`. This installer is unsigned. Installing it was not part of the build verification.
+`src-tauri/target/release/bundle/nsis/Veloce Browser_0.1.2_x64-setup.exe`. This installer is unsigned. Installing it was not part of the build verification.
 
 Tauri builds for the host OS. Windows requires Microsoft C++ Build Tools/Windows SDK and the WebView2 Runtime; macOS requires Xcode command-line tools; Linux requires the documented WebKitGTK/GTK development packages. Build each release on its target OS or set up that platform's supported cross-compilation toolchain. A Windows build does not validate the macOS or Linux backend.
 
 ## Data
 
 Veloce uses the OS-specific Tauri application-data directory under its own identifier `com.veloce.browser`. Session/settings files are JSON; they contain tab URLs and preferences, not passwords. When password autosave is enabled, credentials are handled by WebView2's profile storage and are not written into Veloce's JSON files; storage security and behavior are provided by WebView2/Windows, with no Veloce cloud sync. Do not treat this baseline as a finished consumer browser until the missing security, network-filter and platform-specific test work is completed.
+
+The installer update keeps the existing app identifier and does not include or overwrite the user's WebView2 profile. Website credentials remain in that local profile; they are not uploaded to the source repository or attached release archive. Uninstalling the browser or deleting its local app-data directory can still remove profile data.
 
 Video progress is stored locally in `playback.json` in the same application-data directory. It records the page/video key, playback position, duration, and whether playback was active; up to 100 recent checkpoints are retained and a completed video is removed. The “Video an der letzten Stelle fortsetzen” setting restores the saved position and attempts autoplay only when the video was playing before the last checkpoint. Site autoplay rules or WebView2 may require the user to press Play. Session and progress data normally remain through an app update or reinstall that leaves this application-data directory intact; manually deleting profile data or a cleanup tool can remove them. Progress is checkpointed during playback, so an abrupt power loss can lose the last few seconds.

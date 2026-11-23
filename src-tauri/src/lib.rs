@@ -945,8 +945,9 @@ fn external_launch_url() -> Option<String> {
 
 #[cfg(windows)]
 fn registry_set_string(key: &str, value_name: Option<&str>, value: &str) -> Result<(), String> {
+    let full_key = format!(r"HKCU\{key}");
     let mut command = std::process::Command::new("reg.exe");
-    command.arg("add").arg(key);
+    command.arg("add").arg(&full_key);
     if let Some(value_name) = value_name {
         command.args(["/v", value_name]);
     } else {
@@ -963,9 +964,9 @@ fn registry_set_string(key: &str, value_name: Option<&str>, value: &str) -> Resu
     } else {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
         Err(if detail.is_empty() {
-            format!("Windows lehnte den Registrierungseintrag {key} ab.")
+            format!("Windows lehnte den Registrierungseintrag {full_key} ab.")
         } else {
-            format!("Windows lehnte den Registrierungseintrag {key} ab: {detail}")
+            format!("Windows lehnte den Registrierungseintrag {full_key} ab: {detail}")
         })
     }
 }
@@ -980,31 +981,108 @@ fn register_default_browser_blocking() -> Result<(), String> {
         .and_then(|name| name.to_str())
         .ok_or("Name der Veloce-Programmdatei ist ungültig.")?
         .to_string();
-    let url_progid = "VeloceURL";
+    let http_progid = "VeloceURL.HTTP";
+    let https_progid = "VeloceURL.HTTPS";
+    let html_progid = "VeloceHTML";
     let capabilities = r"Software\Clients\StartMenuInternet\VeloceBrowser\Capabilities";
     let command = format!("\"{executable}\" \"%1\"");
     let icon = format!("\"{executable}\",0");
     let root = r"Software\Clients\StartMenuInternet\VeloceBrowser";
     let entries = [
         (
-            format!(r"Software\Classes\{url_progid}"),
+            format!(r"Software\Classes\{http_progid}"),
             None,
-            "Veloce Webadresse".to_string(),
+            "Veloce HTTP-Adresse".to_string(),
         ),
         (
-            format!(r"Software\Classes\{url_progid}"),
+            format!(r"Software\Classes\{http_progid}"),
             Some("URL Protocol".to_string()),
             String::new(),
         ),
         (
-            format!(r"Software\Classes\{url_progid}\DefaultIcon"),
+            format!(r"Software\Classes\{http_progid}\DefaultIcon"),
             None,
             icon.clone(),
         ),
         (
-            format!(r"Software\Classes\{url_progid}\shell\open\command"),
+            format!(r"Software\Classes\{http_progid}\shell\open\command"),
+            None,
+            command.clone(),
+        ),
+        (
+            format!(r"Software\Classes\{https_progid}"),
+            None,
+            "Veloce HTTPS-Adresse".to_string(),
+        ),
+        (
+            format!(r"Software\Classes\{https_progid}"),
+            Some("URL Protocol".to_string()),
+            String::new(),
+        ),
+        (
+            format!(r"Software\Classes\{https_progid}\DefaultIcon"),
+            None,
+            icon.clone(),
+        ),
+        (
+            format!(r"Software\Classes\{https_progid}\shell\open\command"),
+            None,
+            command.clone(),
+        ),
+        (
+            format!(r"Software\Classes\{html_progid}"),
+            None,
+            "Veloce HTML-Dokument".to_string(),
+        ),
+        (
+            format!(r"Software\Classes\{html_progid}\DefaultIcon"),
+            None,
+            icon.clone(),
+        ),
+        (
+            format!(r"Software\Classes\{html_progid}\shell\open\command"),
+            None,
+            command.clone(),
+        ),
+        (
+            format!(r"Software\Classes\http\OpenWithProgids"),
+            Some(http_progid.to_string()),
+            String::new(),
+        ),
+        (
+            format!(r"Software\Classes\https\OpenWithProgids"),
+            Some(https_progid.to_string()),
+            String::new(),
+        ),
+        (
+            format!(r"Software\Classes\.htm\OpenWithProgids"),
+            Some(html_progid.to_string()),
+            String::new(),
+        ),
+        (
+            format!(r"Software\Classes\.html\OpenWithProgids"),
+            Some(html_progid.to_string()),
+            String::new(),
+        ),
+        (
+            r"Software\Classes\Applications\veloce-browser.exe".to_string(),
+            Some("FriendlyAppName".to_string()),
+            "Veloce Browser".to_string(),
+        ),
+        (
+            r"Software\Classes\Applications\veloce-browser.exe\shell\open\command".to_string(),
             None,
             command,
+        ),
+        (
+            r"Software\Classes\Applications\veloce-browser.exe\SupportedTypes".to_string(),
+            Some(".htm".to_string()),
+            String::new(),
+        ),
+        (
+            r"Software\Classes\Applications\veloce-browser.exe\SupportedTypes".to_string(),
+            Some(".html".to_string()),
+            String::new(),
         ),
         (root.to_string(), None, "Veloce Browser".to_string()),
         (format!(r"{root}\DefaultIcon"), None, icon),
@@ -1031,22 +1109,22 @@ fn register_default_browser_blocking() -> Result<(), String> {
         (
             format!(r"{capabilities}\URLAssociations"),
             Some("http".to_string()),
-            url_progid.to_string(),
+            http_progid.to_string(),
         ),
         (
             format!(r"{capabilities}\URLAssociations"),
             Some("https".to_string()),
-            url_progid.to_string(),
+            https_progid.to_string(),
         ),
         (
             format!(r"{capabilities}\FileAssociations"),
             Some(".htm".to_string()),
-            url_progid.to_string(),
+            html_progid.to_string(),
         ),
         (
             format!(r"{capabilities}\FileAssociations"),
             Some(".html".to_string()),
-            url_progid.to_string(),
+            html_progid.to_string(),
         ),
         (
             r"Software\RegisteredApplications".to_string(),

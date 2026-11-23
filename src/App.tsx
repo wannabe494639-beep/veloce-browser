@@ -687,8 +687,8 @@ export default function App() {
               <button type="button" className="extension-check" onClick={openGooglePasswordManager}><LockKeyhole size={14}/>Google Passwortmanager im Web öffnen</button>
               <div className="restart-note">Google-Konto-Synchronisierung ist nicht in Veloce integriert. Google-Passwörter lassen sich auf passwords.google.com verwalten; WebView2 speichert und synchronisiert sie nicht automatisch mit diesem Konto.</div>
               <label className="setting-row"><span><strong>Letzte Tabs beim Start wiederherstellen</strong><small>Speichert nur Tab-Adressen und stellt die Seiten beim nächsten Start erneut her.</small></span><input type="checkbox" checked={settings.restoreSession} onChange={(event) => changeSettings({restoreSession:event.target.checked})}/></label>
-              <button type="button" className="extension-check" onClick={() => void configureDefaultBrowser()}><Globe2 size={14}/>In Windows als Browser einrichten</button>
-              <div className="restart-note">Windows öffnet seine Standard-App-Einstellungen. Wähle dort Veloce für HTTP- und HTTPS-Links. Ob ein Link einmalig oder künftig immer geöffnet wird, entscheidet Windows beziehungsweise die aufrufende App.</div>
+              <button type="button" className="extension-check" onClick={() => void configureDefaultBrowser()}><Globe2 size={14}/>Als Standardbrowser festlegen</button>
+              <div className="restart-note">Veloce wird bei der Installation für HTTP- und HTTPS-Links registriert. Diese Schaltfläche öffnet direkt die Windows-Seite für Veloce. Wähle dort „Als Standard festlegen“ oder Veloce im Windows-Dialog „App zum Öffnen dieses Links auswählen“. Windows bestätigt die Auswahl; Veloce ändert sie nicht selbst.</div>
               <div className="capability-note"><Compass size={16}/><span><strong>Lokales Profil</strong><small>Veloce speichert Einstellungen und Sitzung im lokalen App-Datenordner. Das Profil kann unabhängig vom Browserfenster weiter WebView2-Prozesse verwenden.</small></span></div>
             </>}
             {settingsSection === "appearance" && <>
