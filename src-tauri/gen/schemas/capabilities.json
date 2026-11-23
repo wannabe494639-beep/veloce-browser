@@ -1,0 +1,1 @@
+{"main-capability":{"identifier":"main-capability","description":"Least-privilege capability for the Veloce shell window.","local":true,"windows":["main"],"permissions":["core:default","core:event:allow-listen"]}}

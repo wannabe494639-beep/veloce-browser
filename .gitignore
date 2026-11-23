@@ -1,0 +1,26 @@
+# JavaScript dependencies and frontend output
+node_modules/
+dist/
+
+# Rust/Tauri build output
+src-tauri/target/
+target/
+
+# Local secrets and environment configuration
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
+
+# Local build staging artifacts; the runtime extension packages under
+# src-tauri/extensions and their notices under src-tauri/licenses stay tracked.
+src-tauri/extension-staging/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
