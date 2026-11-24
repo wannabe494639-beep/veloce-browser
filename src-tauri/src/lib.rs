@@ -41,9 +41,12 @@ use windows::Win32::{
         },
         Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
     },
-    UI::WindowsAndMessaging::{
-        SetWindowPos, HWND_BOTTOM, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOOWNERZORDER, SWP_NOSIZE,
+    UI::{
+        Shell::ShellExecuteW,
+        WindowsAndMessaging::{
+            SetWindowPos, HWND_BOTTOM, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE,
+            SWP_NOOWNERZORDER, SWP_NOSIZE, SW_SHOWNORMAL,
+        },
     },
 };
 
@@ -83,8 +86,47 @@ const YOUTUBE_PLAYBACK_DIAGNOSTICS_SCRIPT: &str = r#"(() => {
   let sequence = 0;
   let queued = [];
   let active = null;
+  let resourceObserver = null;
+  let resourceObserverTimer = 0;
   const attached = new WeakSet();
   const allowedPhases = new Set(['page-start', 'dom-content-loaded', 'window-load', 'video-click', 'player-request', 'metadata', 'canplay', 'first-frame', 'buffer-wait', 'buffer-resume', 'slow-resource']);
+  const isVideoPage = () => {
+    const url = new URL(location.href);
+    return (url.pathname === '/watch' && url.searchParams.has('v')) || /^\/(shorts|live|embed)\//.test(url.pathname);
+  };
+  const stopResourceObserver = () => {
+    if (resourceObserver) { resourceObserver.disconnect(); resourceObserver = null; }
+    if (resourceObserverTimer) { window.clearTimeout(resourceObserverTimer); resourceObserverTimer = 0; }
+  };
+  const startResourceObserver = () => {
+    if (resourceObserver || typeof PerformanceObserver !== 'function') return;
+    try {
+      resourceObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (!active || active.slowResources >= 5 || entry.duration < 800 || entry.startTime < active.startedAt) continue;
+          let host = '';
+          try { host = new URL(entry.name).hostname.toLowerCase(); } catch (_) { continue; }
+          const resourceHost = host.endsWith('.googlevideo.com') || host === 'googlevideo.com' ? 'googlevideo.com'
+            : host === 'youtubei.googleapis.com' ? host
+            : host.endsWith('.ytimg.com') || host === 'ytimg.com' ? 'ytimg.com'
+            : host.endsWith('.youtube.com') || host === 'youtube.com' ? 'youtube.com' : '';
+          if (!resourceHost) continue;
+          active.slowResources += 1;
+          const status = typeof entry.responseStatus === 'number' && entry.responseStatus > 0 ? entry.responseStatus : null;
+          report('slow-resource', {
+            resourceHost,
+            resourceType: String(entry.initiatorType || 'resource').slice(0, 24),
+            resourceDurationMs: Math.round(entry.duration),
+            responseStatus: status,
+            transferBytes: Math.max(0, Math.round(entry.transferSize || 0)),
+          });
+        }
+      });
+      resourceObserver.observe({ type: 'resource', buffered: true });
+      // Do not keep a resource observer running indefinitely if playback never starts.
+      resourceObserverTimer = window.setTimeout(stopResourceObserver, 30000);
+    } catch (_) { stopResourceObserver(); }
+  };
   const post = (message) => {
     try {
       const bridge = window.chrome && window.chrome.webview;
@@ -100,7 +142,9 @@ const YOUTUBE_PLAYBACK_DIAGNOSTICS_SCRIPT: &str = r#"(() => {
     for (const message of pending) post(message);
   };
   const begin = (source) => {
+    stopResourceObserver();
     active = { id: `${Math.floor(performance.timeOrigin)}-${++sequence}`, source, startedAt: performance.now(), playerRequested: false, frameReported: false, stallStartedAt: null, slowResources: 0 };
+    if (source === 'click' || isVideoPage()) startResourceObserver();
     return active;
   };
   const report = (phase, details = {}) => {
@@ -164,10 +208,14 @@ const YOUTUBE_PLAYBACK_DIAGNOSTICS_SCRIPT: &str = r#"(() => {
       const frameAttemptId = active.id;
       if (typeof video.requestVideoFrameCallback === 'function') {
         video.requestVideoFrameCallback(() => {
-          if (active && active.id === frameAttemptId) report('first-frame');
+          if (active && active.id === frameAttemptId) {
+            report('first-frame');
+            stopResourceObserver();
+          }
         });
       } else {
         report('first-frame');
+        stopResourceObserver();
       }
     });
     video.addEventListener('waiting', () => {
@@ -179,38 +227,16 @@ const YOUTUBE_PLAYBACK_DIAGNOSTICS_SCRIPT: &str = r#"(() => {
     document.querySelectorAll('video').forEach(attachVideo);
   };
   document.addEventListener('DOMContentLoaded', scanVideos, { once: true });
+  const handleYouTubeNavigation = () => window.setTimeout(() => {
+    scanVideos();
+    reportLocation();
+    if (isVideoPage() && (!active || active.source !== 'click' || performance.now() - active.startedAt > 120000)) begin('page');
+    else if (!isVideoPage()) stopResourceObserver();
+  }, 0);
   for (const eventName of ['yt-navigate-finish', 'yt-page-data-updated']) {
-    window.addEventListener(eventName, () => window.setTimeout(() => {
-      scanVideos();
-      reportLocation();
-    }, 0));
+    window.addEventListener(eventName, handleYouTubeNavigation);
   }
-  window.addEventListener('popstate', reportLocation);
-  if (typeof PerformanceObserver === 'function') {
-    try {
-      new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) {
-          if (!active || active.slowResources >= 5 || entry.duration < 800 || entry.startTime < active.startedAt) continue;
-          let host = '';
-          try { host = new URL(entry.name).hostname.toLowerCase(); } catch (_) { continue; }
-          const resourceHost = host.endsWith('.googlevideo.com') || host === 'googlevideo.com' ? 'googlevideo.com'
-            : host === 'youtubei.googleapis.com' ? host
-            : host.endsWith('.ytimg.com') || host === 'ytimg.com' ? 'ytimg.com'
-            : host.endsWith('.youtube.com') || host === 'youtube.com' ? 'youtube.com' : '';
-          if (!resourceHost) continue;
-          active.slowResources += 1;
-          const status = typeof entry.responseStatus === 'number' && entry.responseStatus > 0 ? entry.responseStatus : null;
-          report('slow-resource', {
-            resourceHost,
-            resourceType: String(entry.initiatorType || 'resource').slice(0, 24),
-            resourceDurationMs: Math.round(entry.duration),
-            responseStatus: status,
-            transferBytes: Math.max(0, Math.round(entry.transferSize || 0)),
-          });
-        }
-      }).observe({ type: 'resource', buffered: true });
-    } catch (_) {}
-  }
+  window.addEventListener('popstate', handleYouTubeNavigation);
 })()"#;
 const TRACKING_DOMAINS: &[&str] = &[
     "adservice.google.com",
@@ -1385,11 +1411,20 @@ fn schedule_window_geometry_save(app: AppHandle<Wry>, state: AppState) {
 }
 
 fn persist_session(app: &AppHandle<Wry>, state: &AppState) {
-    let tabs = state
+    let mut tabs = state
         .tabs
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .clone();
+    // A restored YouTube watch URL reopens a stale video (and may trigger the
+    // site's previous playback state). Keep ordinary tabs, but persist video
+    // pages as the YouTube home page so the next launch starts cleanly.
+    for tab in &mut tabs {
+        if Url::parse(&tab.url).is_ok_and(|url| is_youtube_video_url(&url)) {
+            tab.url = "https://www.youtube.com/".into();
+            tab.title = "YouTube".into();
+        }
+    }
     let active_id = state
         .active_id
         .lock()
@@ -1540,7 +1575,28 @@ fn open_downloaded_path(path: PathBuf) -> Result<(), String> {
     }
 
     #[cfg(target_os = "windows")]
-    let mut command = std::process::Command::new("explorer.exe");
+    {
+        use windows::core::PCWSTR;
+        let operation = HSTRING::from("open");
+        let target = HSTRING::from(path.to_string_lossy().as_ref());
+        let result = unsafe {
+            ShellExecuteW(
+                None,
+                &operation,
+                &target,
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        let result_code = result.0 as usize;
+        if result_code <= 32 {
+            return Err(format!(
+                "Windows konnte die Datei nicht mit der Standard-App öffnen (ShellExecute-Code {result_code})."
+            ));
+        }
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     let mut command = std::process::Command::new("open");
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -1551,7 +1607,7 @@ fn open_downloaded_path(path: PathBuf) -> Result<(), String> {
         "Das Öffnen heruntergeladener Dateien wird auf diesem System nicht unterstützt.".into(),
     );
 
-    #[cfg(any(target_os = "windows", target_os = "macos", unix))]
+    #[cfg(any(target_os = "macos", unix))]
     {
         command.arg(&path).spawn().map(|_| ()).map_err(|error| {
             format!("Datei konnte nicht mit der System-App geöffnet werden: {error}")
@@ -1710,6 +1766,54 @@ fn playback_key(url: &Url) -> String {
     stable.to_string()
 }
 
+fn is_youtube_host(host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    host == "youtube.com" || host.ends_with(".youtube.com") || host == "youtu.be"
+}
+
+fn is_youtube_video_url(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if !is_youtube_host(host) {
+        return false;
+    }
+    if host.eq_ignore_ascii_case("youtu.be") {
+        return url
+            .path_segments()
+            .and_then(|mut segments| segments.next())
+            .is_some_and(|id| !id.is_empty());
+    }
+    if url.path() == "/watch" {
+        return url
+            .query_pairs()
+            .any(|(key, value)| key == "v" && !value.is_empty());
+    }
+    url.path_segments()
+        .and_then(|mut segments| {
+            let first = segments.next()?;
+            matches!(first, "shorts" | "live" | "embed" | "v")
+                .then(|| segments.next())
+                .flatten()
+        })
+        .is_some_and(|id| !id.is_empty())
+}
+
+fn clear_youtube_playback_checkpoints(app: &AppHandle<Wry>) -> Result<(), String> {
+    let path = app_dir(app)?.join("playback.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut checkpoints = read_json::<Vec<PlaybackCheckpoint>>(&path)
+        .ok_or_else(|| "Der lokale Videofortschritt konnte nicht gelesen werden.".to_string())?;
+    let original_count = checkpoints.len();
+    checkpoints.retain(|checkpoint| !checkpoint.key.starts_with("youtube:"));
+    if checkpoints.len() != original_count {
+        write_json(&path, &checkpoints)?;
+    }
+    Ok(())
+}
+
 fn playback_checkpoints(app: &AppHandle<Wry>) -> Result<Vec<PlaybackCheckpoint>, String> {
     let path = app_dir(app)?.join("playback.json");
     if !path.exists() {
@@ -1736,6 +1840,11 @@ fn save_playback_checkpoint(
     duration_seconds: f64,
     was_playing: bool,
 ) -> Result<(), String> {
+    // YouTube's last video and playback position are intentionally not kept
+    // in Veloce's local resume store.
+    if is_youtube_video_url(url) {
+        return Ok(());
+    }
     if !position_seconds.is_finite()
         || !duration_seconds.is_finite()
         || position_seconds < 0.0
@@ -2780,6 +2889,9 @@ const VIDEO_RESUME_SCRIPT: &str = r#"(() => {
   // This runs in the page's WebView2 context. The checkpoint contains only the
   // current page URL and playback position and is stored by the native app.
   window.__veloceResumePlaybackEnabled = __RESUME_ENABLED__;
+  // YouTube's own player owns its resume behavior. Avoid installing video
+  // listeners and host messages there; Veloce does not save YouTube positions.
+  if (/(^|\.)youtube\.com$/i.test(location.hostname)) return;
   if (window.__velocePlaybackCheckpointInstalled) {
     window.__velocePlaybackSettingsChanged?.(window.__veloceResumePlaybackEnabled);
     return;
@@ -2822,7 +2934,7 @@ const VIDEO_RESUME_SCRIPT: &str = r#"(() => {
     )[0] || null;
   };
   const sendPosition = (video, force = false, playingOverride) => {
-    if (!window.__veloceResumePlaybackEnabled) return;
+    if (!window.__veloceResumePlaybackEnabled || isYouTube()) return;
     if (!video || !Number.isFinite(video.duration) || video.duration < 1 || !Number.isFinite(video.currentTime)) return;
     const now = Date.now();
     if (!force && now - lastWriteAt < 5000) return;
@@ -2834,7 +2946,7 @@ const VIDEO_RESUME_SCRIPT: &str = r#"(() => {
     post({type:'veloce-playback-position', key, url:location.href, positionSeconds:video.currentTime, durationSeconds:video.duration, wasPlaying:isPlaying});
   };
   const requestResume = (video) => {
-    if (!window.__veloceResumePlaybackEnabled) return;
+    if (!window.__veloceResumePlaybackEnabled || isYouTube()) return;
     const key = videoKey();
     if (!key || resumed.has(key)) return;
     resumed.add(key);
@@ -2896,7 +3008,7 @@ const VIDEO_RESUME_SCRIPT: &str = r#"(() => {
   window.addEventListener('pagehide', onPageHide, {capture:true});
   const onNativeMessage = (event) => {
     const data = event && event.data;
-    if (!window.__veloceResumePlaybackEnabled || !data || data.type !== 'veloce-playback-resume') return;
+    if (!window.__veloceResumePlaybackEnabled || isYouTube() || !data || data.type !== 'veloce-playback-resume') return;
     const video = selectVideo();
     if (!video || data.key !== videoKey() || !Number.isFinite(data.positionSeconds)) {
       if (typeof data.key === 'string') resumed.delete(data.key);
@@ -3062,6 +3174,9 @@ fn register_youtube_diagnostics(
                             || !(host.eq_ignore_ascii_case(page_host)
                                 || (youtube_source && youtube_page))
                         {
+                            return Ok(());
+                        }
+                        if youtube_source && is_youtube_video_url(&page_url) {
                             return Ok(());
                         }
                         match message_type {
@@ -3611,12 +3726,20 @@ fn restore_session(app: AppHandle<Wry>, state: State<'_, AppState>) -> SavedSess
         tabs: Vec::new(),
         active_id: None,
     });
+    if let Err(error) = clear_youtube_playback_checkpoints(&app) {
+        eprintln!("YouTube-Wiedergabestände konnten nicht entfernt werden: {error}");
+        let _ = app.emit("veloce-native-warning", json!({"message": format!("YouTube-Wiedergabestände konnten nicht entfernt werden: {error}")}));
+    }
     saved.tabs.retain(|tab| {
         tab.url == START_URL
             || Url::parse(&tab.url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
     });
     saved.tabs.truncate(30);
     for tab in &mut saved.tabs {
+        if Url::parse(&tab.url).is_ok_and(|url| is_youtube_video_url(&url)) {
+            tab.url = "https://www.youtube.com/".into();
+            tab.title = "YouTube".into();
+        }
         // Suspension is a runtime-only state; WebView2 views are recreated on
         // launch, so persisted tabs must start as resumed.
         tab.suspended = false;
@@ -3642,6 +3765,8 @@ fn restore_session(app: AppHandle<Wry>, state: State<'_, AppState>) -> SavedSess
         .lock()
         .unwrap_or_else(|error| error.into_inner()) = saved.active_id.clone();
     emit_tabs(&app, &state);
+    // Rewrite legacy sessions too, so old watch URLs are not left on disk.
+    persist_session(&app, &state);
     saved
 }
 
@@ -4827,4 +4952,3 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
-
