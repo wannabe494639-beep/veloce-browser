@@ -179,6 +179,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .youtube-diagnostics-heading button { padding: 4px 7px; border: 1px solid rgba(255,255,255,.09); border-radius: 6px; color: #aeb9b7; background: rgba(255,255,255,.035); font-size: 8px; cursor: pointer; }
 .youtube-diagnostics-heading button:disabled { opacity: .45; cursor: default; }
 .youtube-diagnostics > p { margin: 0; color: #8f9b99; font-size: 8.5px; line-height: 1.5; }
+.youtube-stage-summary { display: grid; gap: 3px; padding: 7px 8px; border: 1px solid rgba(85,214,190,.12); border-radius: 7px; background: rgba(0,0,0,.12); }
+.youtube-stage-summary > div { display: flex; justify-content: space-between; gap: 8px; color: #9daaa7; font-size: 8px; }
+.youtube-stage-summary > div:first-child { padding-bottom: 4px; border-bottom: 1px solid rgba(255,255,255,.06); color: #d2e1dc; }
+.youtube-stage-summary strong { color: #a8d8ca; font-weight: 550; text-align: right; }
 .youtube-metric-list { display: grid; gap: 1px; max-height: 210px; overflow: auto; }
 .youtube-metric-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid rgba(255,255,255,.045); }
 .youtube-metric-row > span { display: flex; flex-direction: column; gap: 3px; color: #c8d4d1; font-size: 8.5px; }

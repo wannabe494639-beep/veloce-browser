@@ -143,6 +143,26 @@ export default function App() {
   const [memorySnapshot, setMemorySnapshot] = useState<MemorySnapshot | null>(null);
   const [measuringMemory, setMeasuringMemory] = useState(false);
   const [youtubeMetrics, setYoutubeMetrics] = useState<YoutubeMetric[]>([]);
+  const youtubeAttemptSummary = useMemo(() => {
+    const click = youtubeMetrics.find((metric) => metric.phase === "video-click");
+    if (!click) return null;
+    const attempt = youtubeMetrics.filter((metric) => metric.attemptId === click.attemptId && metric.source === "click");
+    const elapsed = (phase: string) => attempt.find((metric) => metric.phase === phase)?.elapsedMs;
+    const segment = (label: string, start: string, end: string) => {
+      const from = elapsed(start);
+      const to = elapsed(end);
+      return { label, ms: from === undefined || to === undefined ? null : Math.max(0, to - from) };
+    };
+    return {
+      totalMs: elapsed("first-frame"),
+      segments: [
+        segment("Klick → Player-Anfrage", "video-click", "player-request"),
+        segment("Player → Metadaten", "player-request", "metadata"),
+        segment("Metadaten → startbereit", "metadata", "canplay"),
+        segment("Startbereit → erstes Bild", "canplay", "first-frame"),
+      ],
+    };
+  }, [youtubeMetrics]);
   const [extensionFolder, setExtensionFolder] = useState("");
   const [extensionPreview, setExtensionPreview] = useState<ExtensionManifestPreview | null>(null);
   const [installingExtension, setInstallingExtension] = useState(false);
@@ -730,6 +750,10 @@ export default function App() {
               <div className="youtube-diagnostics">
                 <div className="youtube-diagnostics-heading"><strong>YouTube-Ladezeiten</strong><button type="button" onClick={() => setYoutubeMetrics([])} disabled={!youtubeMetrics.length}>Leeren</button></div>
                 <p>Lokale Momentaufnahme: Klick bis Player, Metadaten, Startfähigkeit und erstes Videobild. Langsame Ressourcen werden nur nach Host und Typ erfasst. Keine Videotitel, Suchbegriffe oder vollständigen URLs; nichts wird übertragen oder dauerhaft gespeichert.</p>
+                {youtubeAttemptSummary && <div className="youtube-stage-summary">
+                  <div><span>Letzter Videostart</span><strong>{youtubeAttemptSummary.totalMs === undefined ? "Erstes Bild noch nicht gemessen" : `${(youtubeAttemptSummary.totalMs / 1000).toFixed(1)} s bis zum ersten Bild`}</strong></div>
+                  {youtubeAttemptSummary.segments.map((segment) => <div key={segment.label}><span>{segment.label}</span><strong>{segment.ms === null ? "—" : `${(segment.ms / 1000).toFixed(1)} s`}</strong></div>)}
+                </div>}
                 {youtubeMetrics.length ? <div className="youtube-metric-list">{youtubeMetrics.slice(0, 12).map((metric, index) => <div className="youtube-metric-row" key={`${metric.id}-${metric.attemptId}-${metric.phase}-${index}`}>
                   <span>{YOUTUBE_METRIC_LABELS[metric.phase] ?? metric.phase}<small>{metric.source === "click" ? "ab Videoklick" : "ab Seitenstart"}</small></span>
                   <strong>{metric.phase === "slow-resource" ? `${metric.resourceHost ?? "Ressource"} · ${metric.resourceDurationMs ?? 0} ms${metric.responseStatus ? ` · HTTP ${metric.responseStatus}` : " · Status nicht verfügbar"}` : metric.phase === "buffer-resume" ? `${metric.stallMs ?? 0} ms Pufferpause` : `${metric.elapsedMs} ms`}</strong>

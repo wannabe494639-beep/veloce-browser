@@ -3291,7 +3291,12 @@ fn register_youtube_diagnostics(
                                 false
                             };
                             if changed {
-                                persist_session(&callback_app, &state);
+                                // A watch URL is intentionally persisted as the YouTube home page.
+                                // Avoid synchronous JSON I/O on the WebView2 UI callback during
+                                // click-to-play; the in-memory tab still gets the exact URL.
+                                if !is_youtube_video_url(&page_url) {
+                                    persist_session(&callback_app, &state);
+                                }
                                 emit_tabs(&callback_app, &state);
                             }
                             return Ok(());
