@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-setLayout"
+description = "Enables the setLayout command without any pre-configured scope."
+commands.allow = ["setLayout"]
+
+[[permission]]
+identifier = "deny-setLayout"
+description = "Denies the setLayout command without any pre-configured scope."
+commands.deny = ["setLayout"]

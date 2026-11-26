@@ -17,6 +17,9 @@ use tauri::{
 };
 use url::Url;
 
+#[cfg(target_os = "android")]
+use tauri_plugin_android_tabs::{AndroidTabConfig, AndroidTabsExt, LayoutConfig};
+
 #[cfg(windows)]
 use webview2_com::{
     BrowserExtensionEnableCompletedHandler, BrowserExtensionRemoveCompletedHandler, CoTaskMemPWSTR,
@@ -318,6 +321,7 @@ fn clamp_zoom(value: f64) -> f64 {
 #[serde(default, rename_all = "camelCase")]
 struct BrowserSettings {
     search_engine: String,
+    address_bar_position: String,
     tracking_protection: bool,
     sleep_after_minutes: u8,
     gaming_mode: bool,
@@ -351,6 +355,7 @@ impl Default for BrowserSettings {
     fn default() -> Self {
         Self {
             search_engine: "duckduckgo".into(),
+            address_bar_position: "top".into(),
             tracking_protection: true,
             sleep_after_minutes: 3,
             gaming_mode: false,
@@ -781,6 +786,19 @@ fn clear_tab_video_activity(state: &AppState, id: &str) {
     }
 }
 
+#[cfg(target_os = "android")]
+fn apply_background_tab_policy(
+    _app: &AppHandle<Wry>,
+    _state: &AppState,
+    _id: &str,
+    _view: &Webview<Wry>,
+) -> Result<bool, String> {
+    // Android background WebViews are managed by the Android plugin. This desktop
+    // WebView2 policy must never call controller visibility APIs on Android.
+    Ok(false)
+}
+
+#[cfg(not(target_os = "android"))]
 fn apply_background_tab_policy(
     app: &AppHandle<Wry>,
     state: &AppState,
@@ -906,6 +924,13 @@ fn set_panel_overlay_blocking(
             format!("Transparenz der Browseroberfläche konnte nicht geändert werden: {error}")
         })?;
 
+    #[cfg(target_os = "android")]
+    {
+        app.android_tabs()
+            .set_overlay(enabled)
+            .map_err(|error| format!("Android-Menüebene konnte nicht angepasst werden: {error}"))?;
+    }
+
     #[cfg(windows)]
     {
         let callback_app = app.clone();
@@ -921,6 +946,7 @@ fn set_panel_overlay_blocking(
             .map_err(|error| format!("Native Browseroberfläche konnte nicht angeordnet werden: {error}"))?;
     }
 
+    #[cfg(not(target_os = "android"))]
     if enabled {
         shell.set_focus().map_err(|error| error.to_string())?;
     } else if let Some(id) = state
@@ -1172,17 +1198,64 @@ fn register_default_browser_blocking() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn register_default_browser() -> Result<(), String> {
+#[allow(unused_variables)]
+async fn register_default_browser(app: AppHandle<Wry>) -> Result<(), String> {
     #[cfg(windows)]
     {
         return run_blocking(register_default_browser_blocking).await;
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
+    {
+        return app
+            .android_tabs()
+            .request_default_browser()
+            .map_err(|error| {
+                format!("Android-Standardbrowserauswahl konnte nicht geöffnet werden: {error}")
+            });
+    }
+    #[cfg(all(not(windows), not(target_os = "android")))]
     {
         Err(
             "Die Standardbrowser-Registrierung ist in diesem Build nur für Windows eingerichtet."
                 .into(),
         )
+    }
+}
+
+#[tauri::command]
+fn consume_android_external_url(app: AppHandle<Wry>) -> Result<Option<String>, String> {
+    #[cfg(target_os = "android")]
+    {
+        return app
+            .android_tabs()
+            .consume_external_url()
+            .map_err(|error| format!("Externer Link konnte nicht gelesen werden: {error}"));
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+fn share_page(app: AppHandle<Wry>, url: String, title: String) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let parsed =
+            Url::parse(&url).map_err(|error| format!("Ungültige Seitenadresse: {error}"))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err("Nur HTTP- und HTTPS-Seiten können geteilt werden.".into());
+        }
+        return app
+            .android_tabs()
+            .share_page(parsed.as_str(), &title)
+            .map_err(|error| format!("Android-Teilen-Menü konnte nicht geöffnet werden: {error}"));
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, url, title);
+        Err("Das native Teilen-Menü ist in diesem Build nicht verfügbar.".into())
     }
 }
 
@@ -1310,6 +1383,7 @@ fn restore_window_geometry(app: &AppHandle<Wry>) -> Result<(), String> {
         .map_err(|error| {
             format!("Fensterposition konnte nicht wiederhergestellt werden: {error}")
         })?;
+    #[cfg(not(target_os = "android"))]
     if saved.maximized {
         window.maximize().map_err(|error| {
             format!("Fenster konnte nicht maximiert wiederhergestellt werden: {error}")
@@ -1545,7 +1619,61 @@ fn get_downloads(state: State<'_, AppState>) -> Vec<DownloadEntry> {
 }
 
 #[tauri::command]
-async fn open_downloaded_file(id: String, state: State<'_, AppState>) -> Result<(), String> {
+fn report_android_page_state(
+    app: AppHandle<Wry>,
+    state: State<'_, AppState>,
+    id: String,
+    url: String,
+    title: String,
+    loading: bool,
+    error: Option<String>,
+) -> Result<(), String> {
+    let safe_url = if url.starts_with("http://") || url.starts_with("https://") {
+        Some(validate_web_url(&url, "die geladene Seite")?)
+    } else {
+        None
+    };
+    let mut tabs = state
+        .tabs
+        .lock()
+        .map_err(|_| "Tabverwaltung ist nicht verfügbar.".to_string())?;
+    let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id) else {
+        return Ok(());
+    };
+    if let Some(url) = safe_url {
+        tab.url = url;
+    }
+    if !title.trim().is_empty() {
+        tab.title = title.chars().take(180).collect();
+    }
+    tab.sleeping = false;
+    tab.suspended = false;
+    let current_url = tab.url.clone();
+    drop(tabs);
+    if loading {
+        let _ = app.emit(
+            "veloce-navigation-started",
+            json!({"id": id, "url": current_url}),
+        );
+        let _ = app.emit("veloce-page-loading", json!({"id": id, "url": current_url}));
+    } else {
+        emit_tabs(&app, &state);
+        let _ = app.emit("veloce-page-loaded", json!({"id": id, "url": current_url}));
+        persist_session(&app, &state);
+    }
+    if let Some(error) = error.filter(|message| !message.trim().is_empty()) {
+        let _ = app.emit("veloce-native-error", error);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(unused_variables)]
+async fn open_downloaded_file(
+    app: AppHandle<Wry>,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let path = {
         let downloads = state
             .downloads
@@ -1563,7 +1691,61 @@ async fn open_downloaded_file(id: String, state: State<'_, AppState>) -> Result<
         PathBuf::from(&entry.path)
     };
 
+    #[cfg(target_os = "android")]
+    {
+        let path = path.to_string_lossy().into_owned();
+        return run_blocking(move || {
+            app.android_tabs()
+                .open_download(&path)
+                .map_err(|error| format!("Android konnte die Datei nicht öffnen: {error}"))
+        })
+        .await;
+    }
+    #[cfg(not(target_os = "android"))]
     run_blocking(move || open_downloaded_path(path)).await
+}
+
+#[tauri::command]
+fn record_android_download(
+    app: AppHandle<Wry>,
+    state: State<'_, AppState>,
+    id: String,
+    file_name: String,
+    path: String,
+    started_at_ms: u64,
+    status: String,
+) -> Result<Vec<DownloadEntry>, String> {
+    if !id.starts_with("android-") || file_name.trim().is_empty() {
+        return Err("Android-Downloadmetadaten sind ungültig.".into());
+    }
+    if !["downloading", "completed", "failed"].contains(&status.as_str()) {
+        return Err("Android-Downloadstatus ist ungültig.".into());
+    }
+    let mut downloads = state
+        .downloads
+        .lock()
+        .map_err(|error| format!("Downloadliste ist gesperrt: {error}"))?;
+    if let Some(entry) = downloads.iter_mut().find(|entry| entry.id == id) {
+        entry.file_name = file_name;
+        if !path.is_empty() {
+            entry.path = path;
+        }
+        entry.status = status;
+    } else {
+        downloads.push(DownloadEntry {
+            id,
+            file_name,
+            path,
+            started_at_ms,
+            status,
+            source_url: String::new(),
+        });
+    }
+    let snapshot = downloads.clone();
+    drop(downloads);
+    persist_downloads(&app, &state);
+    emit_downloads(&app, &state);
+    Ok(snapshot)
 }
 
 fn open_downloaded_path(path: PathBuf) -> Result<(), String> {
@@ -2714,9 +2896,20 @@ fn add_custom_extension_blocking(
         })?
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "android")))]
 fn get_extensions_blocking(_app: AppHandle<Wry>) -> Result<Vec<ExtensionStatus>, String> {
     Err("WebView2-Erweiterungen werden derzeit nur im Windows-Build unterstützt.".into())
+}
+
+#[cfg(target_os = "android")]
+fn get_extensions_blocking(_app: AppHandle<Wry>) -> Result<Vec<ExtensionStatus>, String> {
+    Ok(pending_extensions()
+        .into_iter()
+        .map(|mut status| {
+            status.detail = "Android System WebView unterstützt keine Chrome-Erweiterungen; diese Desktop-Erweiterung wird hier nicht installiert oder ausgeführt.".into();
+            status
+        })
+        .collect())
 }
 
 #[cfg(not(windows))]
@@ -2743,9 +2936,27 @@ fn add_custom_extension_blocking(
     Err("WebView2-Erweiterungen werden derzeit nur im Windows-Build unterstützt.".into())
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "android")))]
 fn install_bundled_extensions(_app: &AppHandle<Wry>) -> Result<Vec<ExtensionStatus>, String> {
     Err("uBlock Origin Lite und SponsorBlock werden in diesem Build nur über die Windows-WebView2-Erweiterungs-API unterstützt.".into())
+}
+
+#[cfg(target_os = "android")]
+fn install_bundled_extensions(_app: &AppHandle<Wry>) -> Result<Vec<ExtensionStatus>, String> {
+    get_extensions_blocking_dummy()
+}
+
+#[cfg(target_os = "android")]
+fn get_extensions_blocking_dummy() -> Result<Vec<ExtensionStatus>, String> {
+    Ok(pending_extensions()
+        .into_iter()
+        .map(|mut status| {
+            status.detail =
+                "Nicht verfügbar: Android System WebView unterstützt keine Chrome-Erweiterungen."
+                    .into();
+            status
+        })
+        .collect())
 }
 
 fn ensure_extensions(app: &AppHandle<Wry>, state: &AppState) {
@@ -3399,42 +3610,102 @@ fn register_youtube_diagnostics(
 }
 
 fn create_webview(app: &AppHandle<Wry>, state: &AppState, tab: &BrowserTab) -> Result<(), String> {
-    if tab.url == START_URL || app.get_webview(&tab.id).is_some() {
+    if tab.url == START_URL {
         return Ok(());
     }
-    let url = Url::parse(&tab.url).map_err(|error| format!("Ungültige Seitenadresse: {error}"))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err("Veloce öffnet nur HTTP- und HTTPS-Webseiten.".into());
+    #[cfg(target_os = "android")]
+    {
+        if app
+            .android_tabs()
+            .has_tab(&tab.id)
+            .map_err(|error| format!("Android-Tabstatus konnte nicht gelesen werden: {error}"))?
+        {
+            return Ok(());
+        }
+        let url =
+            Url::parse(&tab.url).map_err(|error| format!("Ungültige Seitenadresse: {error}"))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err("Veloce öffnet nur HTTP- und HTTPS-Webseiten.".into());
+        }
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|_| "Einstellungen nicht verfügbar.".to_string())?
+            .clone();
+        let width = *state
+            .width
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let height = *state
+            .height
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let chrome_height = *state
+            .chrome_height
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        app.android_tabs()
+            .create_tab(AndroidTabConfig {
+                id: tab.id.clone(),
+                url: tab.url.clone(),
+                width,
+                height,
+                chrome_height,
+                chrome_position: settings.address_bar_position.clone(),
+                zoom: clamp_zoom(tab.zoom),
+                tracking_protection: settings.tracking_protection,
+                init_script: youtube_settings_script(
+                    settings.youtube_video_fill,
+                    settings.youtube_hide_interruptions,
+                    settings.resume_video_playback,
+                ),
+            })
+            .map_err(|error| format!("Android-WebView konnte nicht erstellt werden: {error}"))?;
+        return Ok(());
     }
-    // Install/check extensions against the existing shared WebView2 profile
-    // before the first external page starts navigating. Errors are shown in
-    // Settings but do not prevent browsing.
-    ensure_extensions(app, state);
-    let window = app
-        .get_window("main")
-        .ok_or("Das Veloce-Hauptfenster fehlt.")?;
-    let width = *state
-        .width
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let height = *state
-        .height
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let top = *state
-        .chrome_height
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let id_navigation = tab.id.clone();
-    let app_navigation = app.clone();
-    let id_load = tab.id.clone();
-    let app_load = app.clone();
-    let id_title = tab.id.clone();
-    let app_title = app.clone();
-    let app_popup = app.clone();
-    let app_downloads = app.clone();
-    let (youtube_video_fill, hide_youtube_interruptions, password_autosave, resume_video_playback) =
-        state
+    #[cfg(not(target_os = "android"))]
+    {
+        if app.get_webview(&tab.id).is_some() {
+            return Ok(());
+        }
+        let url =
+            Url::parse(&tab.url).map_err(|error| format!("Ungültige Seitenadresse: {error}"))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err("Veloce öffnet nur HTTP- und HTTPS-Webseiten.".into());
+        }
+        // Install/check extensions against the existing shared WebView2 profile
+        // before the first external page starts navigating. Errors are shown in
+        // Settings but do not prevent browsing.
+        ensure_extensions(app, state);
+        let window = app
+            .get_window("main")
+            .ok_or("Das Veloce-Hauptfenster fehlt.")?;
+        let width = *state
+            .width
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let height = *state
+            .height
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let top = *state
+            .chrome_height
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let id_navigation = tab.id.clone();
+        let app_navigation = app.clone();
+        let id_load = tab.id.clone();
+        let app_load = app.clone();
+        let id_title = tab.id.clone();
+        let app_title = app.clone();
+        let app_popup = app.clone();
+        let app_downloads = app.clone();
+        let (
+            youtube_video_fill,
+            hide_youtube_interruptions,
+            password_autosave,
+            resume_video_playback,
+        ) = state
             .settings
             .lock()
             .map(|settings| {
@@ -3446,163 +3717,167 @@ fn create_webview(app: &AppHandle<Wry>, state: &AppState, tab: &BrowserTab) -> R
                 )
             })
             .unwrap_or((true, true, true, true));
-    let builder = WebviewBuilder::new(tab.id.clone(), WebviewUrl::External(url))
-        .browser_extensions_enabled(true)
-        .initialization_script(MEDIA_ACTIVITY_SCRIPT)
-        .initialization_script(youtube_settings_script(
-            youtube_video_fill,
-            hide_youtube_interruptions,
-            resume_video_playback,
-        ))
-        .zoom_hotkeys_enabled(true)
-        .on_download(move |_webview, event| {
-            match event {
-                DownloadEvent::Requested { url, destination } => {
-                    record_download_requested(&app_downloads, &url, destination);
+        let builder = WebviewBuilder::new(tab.id.clone(), WebviewUrl::External(url))
+            .browser_extensions_enabled(true)
+            .initialization_script(MEDIA_ACTIVITY_SCRIPT)
+            .initialization_script(youtube_settings_script(
+                youtube_video_fill,
+                hide_youtube_interruptions,
+                resume_video_playback,
+            ))
+            .zoom_hotkeys_enabled(true)
+            .on_download(move |_webview, event| {
+                match event {
+                    DownloadEvent::Requested { url, destination } => {
+                        record_download_requested(&app_downloads, &url, destination);
+                    }
+                    DownloadEvent::Finished { url, path, success } => {
+                        record_download_finished(&app_downloads, &url, path.as_ref(), success);
+                    }
+                    _ => {}
                 }
-                DownloadEvent::Finished { url, path, success } => {
-                    record_download_finished(&app_downloads, &url, path.as_ref(), success);
+                true
+            })
+            .on_navigation(move |url| {
+                if !matches!(url.scheme(), "http" | "https") {
+                    return false;
                 }
-                _ => {}
-            }
-            true
-        })
-        .on_navigation(move |url| {
-            if !matches!(url.scheme(), "http" | "https") {
-                return false;
-            }
-            let state = app_navigation.state::<AppState>();
-            clear_tab_video_activity(&state, &id_navigation);
-            let protection = state
-                .settings
-                .lock()
-                .map(|settings| settings.tracking_protection)
-                .unwrap_or(false);
-            if protection && url.host_str().is_some_and(is_tracking_host) {
-                let _ = app_navigation.emit(
-                    "veloce-navigation-blocked",
-                    json!({"id": id_navigation, "host": url.host_str()}),
-                );
-                return false;
-            }
-            if let Ok(mut tabs) = state.tabs.lock() {
-                if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id_navigation) {
-                    tab.url = url.to_string();
-                    tab.title = url.host_str().unwrap_or("Lädt …").to_string();
-                    tab.sleeping = false;
-                    tab.suspended = false;
+                let state = app_navigation.state::<AppState>();
+                clear_tab_video_activity(&state, &id_navigation);
+                let protection = state
+                    .settings
+                    .lock()
+                    .map(|settings| settings.tracking_protection)
+                    .unwrap_or(false);
+                if protection && url.host_str().is_some_and(is_tracking_host) {
+                    let _ = app_navigation.emit(
+                        "veloce-navigation-blocked",
+                        json!({"id": id_navigation, "host": url.host_str()}),
+                    );
+                    return false;
                 }
-            }
-            persist_session(&app_navigation, &state);
-            let _ = app_navigation.emit(
-                "veloce-navigation-started",
-                json!({"id": id_navigation, "url": url.as_str()}),
-            );
-            true
-        })
-        .on_new_window(move |url, _features| {
-            if matches!(url.scheme(), "http" | "https") {
-                let _ = app_popup.emit("veloce-new-tab-requested", json!({"url": url.as_str()}));
-            }
-            NewWindowResponse::Deny
-        })
-        .on_page_load(move |_webview, payload| {
-            if payload.event() == PageLoadEvent::Started {
-                let _ = app_load.emit(
-                    "veloce-page-loading",
-                    json!({"id": id_load, "url": payload.url().as_str()}),
-                );
-                return;
-            }
-            if payload.event() == PageLoadEvent::Finished {
-                let state = app_load.state::<AppState>();
                 if let Ok(mut tabs) = state.tabs.lock() {
-                    if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id_load) {
-                        tab.url = payload.url().to_string();
+                    if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id_navigation) {
+                        tab.url = url.to_string();
+                        tab.title = url.host_str().unwrap_or("Lädt …").to_string();
+                        tab.sleeping = false;
+                        tab.suspended = false;
                     }
                 }
-                persist_session(&app_load, &state);
-                let _ = app_load.emit(
-                    "veloce-page-loaded",
-                    json!({"id": id_load, "url": payload.url().as_str()}),
+                persist_session(&app_navigation, &state);
+                let _ = app_navigation.emit(
+                    "veloce-navigation-started",
+                    json!({"id": id_navigation, "url": url.as_str()}),
                 );
-            }
-        })
-        .on_document_title_changed(move |_webview, title| {
-            let state = app_title.state::<AppState>();
-            if let Ok(mut tabs) = state.tabs.lock() {
-                if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id_title) {
-                    tab.title = title;
+                true
+            })
+            .on_new_window(move |url, _features| {
+                if matches!(url.scheme(), "http" | "https") {
+                    let _ =
+                        app_popup.emit("veloce-new-tab-requested", json!({"url": url.as_str()}));
                 }
-            }
-            emit_tabs(&app_title, &state);
-        });
-    #[cfg(windows)]
-    let builder = builder.with_environment(shared_webview2_environment(app, state)?);
-    let view = window
-        .add_child(
-            builder,
-            LogicalPosition::new(0.0, top),
-            LogicalSize::new(width.max(200.0), (height - top).max(100.0)),
-        )
-        .map_err(|error| format!("WebView konnte nicht erstellt werden: {error}"))?;
-    view.set_zoom(clamp_zoom(tab.zoom))
-        .map_err(|error| format!("Zoom konnte nicht gesetzt werden: {error}"))?;
-    #[cfg(windows)]
-    if let Err(error) = set_webview_password_autosave(&view, password_autosave) {
-        let _ = app.emit(
-            "veloce-native-error",
-            format!("Passwortspeicherung konnte nicht aktiviert werden: {error}"),
-        );
-    }
-    #[cfg(windows)]
-    if let Err(error) = register_youtube_diagnostics(app, &view, tab.id.clone()) {
-        let _ = app.emit("veloce-native-error", error);
-    }
-    #[cfg(windows)]
-    {
-        let fullscreen_app = app.clone();
-        let fullscreen_id = tab.id.clone();
-        view.with_webview(move |platform| {
-            let result = (|| -> windows::core::Result<()> {
-                let core = unsafe { platform.controller().CoreWebView2()? };
-                let callback_app = fullscreen_app.clone();
-                let callback_id = fullscreen_id.clone();
-                let handler = ContainsFullScreenElementChangedEventHandler::create(Box::new(
-                    move |sender, _args| {
-                        let Some(sender) = sender else { return Ok(()) };
-                        let mut contains_fullscreen = windows::core::BOOL(0);
-                        if let Err(error) =
-                            unsafe { sender.ContainsFullScreenElement(&mut contains_fullscreen) }
-                        {
-                            let _ = callback_app.emit(
-                                "veloce-native-error",
-                                format!("Vollbildstatus konnte nicht gelesen werden: {error}"),
-                            );
-                            return Ok(());
+                NewWindowResponse::Deny
+            })
+            .on_page_load(move |_webview, payload| {
+                if payload.event() == PageLoadEvent::Started {
+                    let _ = app_load.emit(
+                        "veloce-page-loading",
+                        json!({"id": id_load, "url": payload.url().as_str()}),
+                    );
+                    return;
+                }
+                if payload.event() == PageLoadEvent::Finished {
+                    let state = app_load.state::<AppState>();
+                    if let Ok(mut tabs) = state.tabs.lock() {
+                        if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id_load) {
+                            tab.url = payload.url().to_string();
                         }
-                        let _ = callback_app.emit(
+                    }
+                    persist_session(&app_load, &state);
+                    let _ = app_load.emit(
+                        "veloce-page-loaded",
+                        json!({"id": id_load, "url": payload.url().as_str()}),
+                    );
+                }
+            })
+            .on_document_title_changed(move |_webview, title| {
+                let state = app_title.state::<AppState>();
+                if let Ok(mut tabs) = state.tabs.lock() {
+                    if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id_title) {
+                        tab.title = title;
+                    }
+                }
+                emit_tabs(&app_title, &state);
+            });
+        #[cfg(windows)]
+        let builder = builder.with_environment(shared_webview2_environment(app, state)?);
+        let view = window
+            .add_child(
+                builder,
+                LogicalPosition::new(0.0, top),
+                LogicalSize::new(width.max(200.0), (height - top).max(100.0)),
+            )
+            .map_err(|error| format!("WebView konnte nicht erstellt werden: {error}"))?;
+        view.set_zoom(clamp_zoom(tab.zoom))
+            .map_err(|error| format!("Zoom konnte nicht gesetzt werden: {error}"))?;
+        #[cfg(windows)]
+        if let Err(error) = set_webview_password_autosave(&view, password_autosave) {
+            let _ = app.emit(
+                "veloce-native-error",
+                format!("Passwortspeicherung konnte nicht aktiviert werden: {error}"),
+            );
+        }
+        #[cfg(windows)]
+        if let Err(error) = register_youtube_diagnostics(app, &view, tab.id.clone()) {
+            let _ = app.emit("veloce-native-error", error);
+        }
+        #[cfg(windows)]
+        {
+            let fullscreen_app = app.clone();
+            let fullscreen_id = tab.id.clone();
+            view.with_webview(move |platform| {
+                let result = (|| -> windows::core::Result<()> {
+                    let core = unsafe { platform.controller().CoreWebView2()? };
+                    let callback_app = fullscreen_app.clone();
+                    let callback_id = fullscreen_id.clone();
+                    let handler = ContainsFullScreenElementChangedEventHandler::create(Box::new(
+                        move |sender, _args| {
+                            let Some(sender) = sender else { return Ok(()) };
+                            let mut contains_fullscreen = windows::core::BOOL(0);
+                            if let Err(error) = unsafe {
+                                sender.ContainsFullScreenElement(&mut contains_fullscreen)
+                            } {
+                                let _ = callback_app.emit(
+                                    "veloce-native-error",
+                                    format!("Vollbildstatus konnte nicht gelesen werden: {error}"),
+                                );
+                                return Ok(());
+                            }
+                            let _ = callback_app.emit(
                             "veloce-fullscreen-changed",
                             json!({"id": callback_id, "fullscreen": contains_fullscreen.as_bool()}),
                         );
-                        Ok(())
-                    },
-                ));
-                let mut token = 0_i64;
-                unsafe { core.add_ContainsFullScreenElementChanged(&handler, &mut token) }
-            })();
-            if let Err(error) = result {
-                let _ = fullscreen_app.emit(
-                    "veloce-native-error",
-                    format!(
+                            Ok(())
+                        },
+                    ));
+                    let mut token = 0_i64;
+                    unsafe { core.add_ContainsFullScreenElementChanged(&handler, &mut token) }
+                })();
+                if let Err(error) = result {
+                    let _ = fullscreen_app.emit(
+                        "veloce-native-error",
+                        format!(
                         "YouTube-Vollbild konnte nicht mit dem Fenster gekoppelt werden: {error}"
                     ),
-                );
-            }
-        })
-        .map_err(|error| format!("Vollbildbehandlung konnte nicht registriert werden: {error}"))?;
+                    );
+                }
+            })
+            .map_err(|error| {
+                format!("Vollbildbehandlung konnte nicht registriert werden: {error}")
+            })?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn activate_view(app: &AppHandle<Wry>, state: &AppState, id: &str) -> Result<(), String> {
@@ -3625,86 +3900,99 @@ fn activate_view(app: &AppHandle<Wry>, state: &AppState, id: &str) -> Result<(),
     if target.url != START_URL {
         create_webview(app, state, &target)?;
     }
-    let tabs = state
-        .tabs
-        .lock()
-        .map_err(|_| "Tabverwaltung ist nicht verfügbar.".to_string())?
-        .clone();
-    let top = *state
-        .chrome_height
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let width = *state
-        .width
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let height = *state
-        .height
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let memory_saver = state
-        .settings
-        .lock()
-        .map(|settings| settings.memory_saver)
-        .unwrap_or(true);
-    for tab in tabs {
-        if let Some(view) = app.get_webview(&tab.id) {
-            if tab.id == id && target.url != START_URL {
-                resume_webview(&view)?;
-                match set_webview_memory_target(&view, false) {
-                    Ok(supported) => {
-                        *state
-                            .memory_target_supported
-                            .lock()
-                            .unwrap_or_else(|error| error.into_inner()) = Some(supported);
-                    }
-                    Err(error) => {
-                        *state
-                            .memory_target_supported
-                            .lock()
-                            .unwrap_or_else(|poison| poison.into_inner()) = Some(false);
-                        let _ = app.emit(
-                            "veloce-native-error",
-                            format!(
+    #[cfg(target_os = "android")]
+    {
+        app.android_tabs()
+            .activate_tab(id, target.url == START_URL)
+            .map_err(|error| format!("Android-Tab konnte nicht aktiviert werden: {error}"))?;
+        emit_tabs(app, state);
+        persist_session(app, state);
+        return Ok(());
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let tabs = state
+            .tabs
+            .lock()
+            .map_err(|_| "Tabverwaltung ist nicht verfügbar.".to_string())?
+            .clone();
+        let top = *state
+            .chrome_height
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let width = *state
+            .width
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let height = *state
+            .height
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let memory_saver = state
+            .settings
+            .lock()
+            .map(|settings| settings.memory_saver)
+            .unwrap_or(true);
+        for tab in tabs {
+            if let Some(view) = app.get_webview(&tab.id) {
+                if tab.id == id && target.url != START_URL {
+                    resume_webview(&view)?;
+                    match set_webview_memory_target(&view, false) {
+                        Ok(supported) => {
+                            *state
+                                .memory_target_supported
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner()) = Some(supported);
+                        }
+                        Err(error) => {
+                            *state
+                                .memory_target_supported
+                                .lock()
+                                .unwrap_or_else(|poison| poison.into_inner()) = Some(false);
+                            let _ = app.emit(
+                                "veloce-native-error",
+                                format!(
                                 "WebView2-Speichermodus konnte nicht angewendet werden: {error}"
                             ),
-                        );
+                            );
+                        }
                     }
-                }
-                view.set_position(LogicalPosition::new(0.0, top))
+                    view.set_position(LogicalPosition::new(0.0, top))
+                        .map_err(|error| error.to_string())?;
+                    view.set_size(LogicalSize::new(
+                        width.max(200.0),
+                        (height - top).max(100.0),
+                    ))
                     .map_err(|error| error.to_string())?;
-                view.set_size(LogicalSize::new(
-                    width.max(200.0),
-                    (height - top).max(100.0),
-                ))
-                .map_err(|error| error.to_string())?;
-                view.show().map_err(|error| error.to_string())?;
-                view.set_focus().map_err(|error| error.to_string())?;
-            } else {
-                view.hide().map_err(|error| error.to_string())?;
-                if memory_saver
-                    && tab.url != START_URL
-                    && previous_id.as_deref() == Some(tab.id.as_str())
-                {
-                    if let Err(error) = apply_background_tab_policy(app, state, &tab.id, &view) {
-                        set_tab_suspended_state(state, &tab.id, false);
-                        let _ = app.emit(
+                    view.show().map_err(|error| error.to_string())?;
+                    view.set_focus().map_err(|error| error.to_string())?;
+                } else {
+                    view.hide().map_err(|error| error.to_string())?;
+                    if memory_saver
+                        && tab.url != START_URL
+                        && previous_id.as_deref() == Some(tab.id.as_str())
+                    {
+                        if let Err(error) = apply_background_tab_policy(app, state, &tab.id, &view)
+                        {
+                            set_tab_suspended_state(state, &tab.id, false);
+                            let _ = app.emit(
                             "veloce-native-warning",
                             json!({"id": tab.id, "message": format!("Hintergrundtab wurde nicht pausiert: {error}")}),
                         );
+                        }
                     }
                 }
             }
         }
-    }
-    if target.url == START_URL {
-        if let Some(shell) = app.get_webview("main") {
-            shell.set_focus().map_err(|error| error.to_string())?;
+        if target.url == START_URL {
+            if let Some(shell) = app.get_webview("main") {
+                shell.set_focus().map_err(|error| error.to_string())?;
+            }
         }
+        emit_tabs(app, state);
+        persist_session(app, state);
+        Ok(())
     }
-    emit_tabs(app, state);
-    persist_session(app, state);
-    Ok(())
 }
 
 #[tauri::command]
@@ -3888,6 +4176,11 @@ fn close_tab_blocking(
             .ok_or("Der Tab existiert nicht mehr.")?;
         tabs.remove(index);
     }
+    #[cfg(target_os = "android")]
+    app.android_tabs()
+        .close_tab(&id)
+        .map_err(|error| format!("Android-Tab konnte nicht geschlossen werden: {error}"))?;
+    #[cfg(not(target_os = "android"))]
     if let Some(view) = app.get_webview(&id) {
         let _ = view.close();
     }
@@ -3945,39 +4238,82 @@ fn navigate_tab_blocking(
         .search_engine
         .clone();
     let url = normalize_input(&input, &engine)?;
-    let mut tab = get_tab(&state, &id)?;
-    if url == START_URL {
-        if let Some(view) = app.get_webview(&id) {
-            let _ = view.close();
-        }
-        clear_tab_video_activity(&state, &id);
-        tab.url = START_URL.into();
-        tab.title = "Neuer Tab".into();
-        tab.sleeping = false;
-        tab.suspended = false;
-        if let Ok(mut tabs) = state.tabs.lock() {
-            if let Some(current) = tabs.iter_mut().find(|current| current.id == id) {
-                *current = tab;
+    #[cfg(target_os = "android")]
+    {
+        let mut tab = get_tab(&state, &id)?;
+        if url == START_URL {
+            if app.android_tabs().has_tab(&id).unwrap_or(false) {
+                app.android_tabs()
+                    .close_tab(&id)
+                    .map_err(|error| error.to_string())?;
             }
+            clear_tab_video_activity(&state, &id);
+            tab.url = START_URL.into();
+            tab.title = "Neuer Tab".into();
+            tab.sleeping = false;
+            tab.suspended = false;
+        } else {
+            tab.url = url.clone();
+            tab.sleeping = false;
+            tab.suspended = false;
         }
-    } else {
-        tab.url = url.clone();
-        tab.sleeping = false;
-        tab.suspended = false;
         if let Ok(mut tabs) = state.tabs.lock() {
             if let Some(current) = tabs.iter_mut().find(|current| current.id == id) {
                 *current = tab.clone();
             }
         }
-        if let Some(view) = app.get_webview(&id) {
-            view.navigate(Url::parse(&url).map_err(|error| error.to_string())?)
-                .map_err(|error| error.to_string())?;
-        } else {
-            create_webview(&app, &state, &tab)?;
+        if url != START_URL {
+            if app
+                .android_tabs()
+                .has_tab(&id)
+                .map_err(|error| error.to_string())?
+            {
+                app.android_tabs()
+                    .navigate(&id, &url)
+                    .map_err(|error| format!("Android-Navigation fehlgeschlagen: {error}"))?;
+            } else {
+                create_webview(&app, &state, &tab)?;
+            }
         }
+        activate_view(&app, &state, &id)?;
+        return Ok(url);
     }
-    activate_view(&app, &state, &id)?;
-    Ok(url)
+    #[cfg(not(target_os = "android"))]
+    {
+        let mut tab = get_tab(&state, &id)?;
+        if url == START_URL {
+            if let Some(view) = app.get_webview(&id) {
+                let _ = view.close();
+            }
+            clear_tab_video_activity(&state, &id);
+            tab.url = START_URL.into();
+            tab.title = "Neuer Tab".into();
+            tab.sleeping = false;
+            tab.suspended = false;
+            if let Ok(mut tabs) = state.tabs.lock() {
+                if let Some(current) = tabs.iter_mut().find(|current| current.id == id) {
+                    *current = tab;
+                }
+            }
+        } else {
+            tab.url = url.clone();
+            tab.sleeping = false;
+            tab.suspended = false;
+            if let Ok(mut tabs) = state.tabs.lock() {
+                if let Some(current) = tabs.iter_mut().find(|current| current.id == id) {
+                    *current = tab.clone();
+                }
+            }
+            if let Some(view) = app.get_webview(&id) {
+                view.navigate(Url::parse(&url).map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                create_webview(&app, &state, &tab)?;
+            }
+        }
+        activate_view(&app, &state, &id)?;
+        Ok(url)
+    }
 }
 
 #[tauri::command]
@@ -3998,17 +4334,27 @@ fn history_move_blocking(
     direction: String,
 ) -> Result<(), String> {
     let _native = lock_native_ops(&state)?;
-    let view = app
-        .get_webview(&id)
-        .ok_or("Dieser Tab ist noch nicht geladen.")?;
-    match direction.as_str() {
-        "back" => view
-            .eval("history.back();")
-            .map_err(|error| error.to_string()),
-        "forward" => view
-            .eval("history.forward();")
-            .map_err(|error| error.to_string()),
-        _ => Err("Unbekannte Verlaufsrichtung.".into()),
+    #[cfg(target_os = "android")]
+    {
+        return app
+            .android_tabs()
+            .history_move(&id, &direction)
+            .map_err(|error| format!("Android-Verlauf konnte nicht bewegt werden: {error}"));
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let view = app
+            .get_webview(&id)
+            .ok_or("Dieser Tab ist noch nicht geladen.")?;
+        match direction.as_str() {
+            "back" => view
+                .eval("history.back();")
+                .map_err(|error| error.to_string()),
+            "forward" => view
+                .eval("history.forward();")
+                .map_err(|error| error.to_string()),
+            _ => Err("Unbekannte Verlaufsrichtung.".into()),
+        }
     }
 }
 
@@ -4025,10 +4371,20 @@ async fn history_move(
 
 fn reload_tab_blocking(app: AppHandle<Wry>, state: AppState, id: String) -> Result<(), String> {
     let _native = lock_native_ops(&state)?;
-    app.get_webview(&id)
-        .ok_or("Dieser Tab ist im Ruhezustand.")?
-        .reload()
-        .map_err(|error| error.to_string())
+    #[cfg(target_os = "android")]
+    {
+        return app
+            .android_tabs()
+            .reload(&id)
+            .map_err(|error| format!("Android-Seite konnte nicht neu geladen werden: {error}"));
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        app.get_webview(&id)
+            .ok_or("Dieser Tab ist im Ruhezustand.")?
+            .reload()
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[tauri::command]
@@ -4060,6 +4416,11 @@ fn set_tab_zoom_blocking(
             .ok_or("Der Tab existiert nicht mehr.")?;
         tab.zoom = zoom;
     }
+    #[cfg(target_os = "android")]
+    app.android_tabs()
+        .set_zoom(&id, zoom)
+        .map_err(|error| format!("Android-Zoom konnte nicht gesetzt werden: {error}"))?;
+    #[cfg(not(target_os = "android"))]
     if let Some(view) = app.get_webview(&id) {
         view.set_zoom(zoom).map_err(|error| error.to_string())?;
     }
@@ -4118,6 +4479,11 @@ fn discard_tab_if_inactive_blocking(
     if tab.pinned || tab.url == START_URL {
         return Ok(false);
     }
+    #[cfg(target_os = "android")]
+    app.android_tabs()
+        .close_tab(&id)
+        .map_err(|error| format!("Hintergrundtab konnte nicht entladen werden: {error}"))?;
+    #[cfg(not(target_os = "android"))]
     if let Some(view) = app.get_webview(&id) {
         view.close().map_err(|error| error.to_string())?;
     }
@@ -4146,11 +4512,17 @@ fn sync_layout_blocking(
     width: f64,
     height: f64,
     chrome_height: f64,
+    chrome_position: String,
 ) -> Result<(), String> {
     let _native = lock_native_ops(&state)?;
     let width = width.clamp(200.0, 12000.0);
     let height = height.clamp(200.0, 12000.0);
     let top = chrome_height.clamp(0.0, 500.0);
+    let chrome_position = if chrome_position == "bottom" {
+        "bottom"
+    } else {
+        "top"
+    };
     *state
         .width
         .lock()
@@ -4168,9 +4540,20 @@ fn sync_layout_blocking(
         .lock()
         .map_err(|_| "Tabverwaltung ist nicht verfügbar.".to_string())?
         .clone();
+    #[cfg(target_os = "android")]
+    app.android_tabs()
+        .set_layout(LayoutConfig {
+            width,
+            height,
+            chrome_height: top,
+            chrome_position: chrome_position.to_string(),
+        })
+        .map_err(|error| format!("Android-Ansichten konnten nicht angeordnet werden: {error}"))?;
+    #[cfg(not(target_os = "android"))]
     for tab in tabs {
         if let Some(view) = app.get_webview(&tab.id) {
-            view.set_position(LogicalPosition::new(0.0, top))
+            let page_top = if chrome_position == "top" { top } else { 0.0 };
+            view.set_position(LogicalPosition::new(0.0, page_top))
                 .map_err(|error| error.to_string())?;
             view.set_size(LogicalSize::new(width, (height - top).max(100.0)))
                 .map_err(|error| error.to_string())?;
@@ -4186,9 +4569,13 @@ async fn sync_layout(
     width: f64,
     height: f64,
     chrome_height: f64,
+    chrome_position: String,
 ) -> Result<(), String> {
     let state = state.inner().clone();
-    run_blocking(move || sync_layout_blocking(app, state, width, height, chrome_height)).await
+    run_blocking(move || {
+        sync_layout_blocking(app, state, width, height, chrome_height, chrome_position)
+    })
+    .await
 }
 
 fn set_content_fullscreen_blocking(
@@ -4200,57 +4587,65 @@ fn set_content_fullscreen_blocking(
     chrome_height: f64,
 ) -> Result<(), String> {
     let _native = lock_native_ops(&state)?;
-    let window = app
-        .get_window("main")
-        .ok_or("Das Veloce-Hauptfenster fehlt.")?;
-    window
-        .set_fullscreen(fullscreen)
-        .map_err(|error| format!("Fenstervollbild konnte nicht geändert werden: {error}"))?;
-
-    let measured = window.inner_size().ok();
-    let scale = window.scale_factor().unwrap_or(1.0).max(0.1);
-    let width = measured
-        .map(|size| size.width as f64 / scale)
-        .unwrap_or(width)
-        .clamp(200.0, 12000.0);
-    let height = measured
-        .map(|size| size.height as f64 / scale)
-        .unwrap_or(height)
-        .clamp(200.0, 12000.0);
-    let top = if fullscreen {
-        0.0
-    } else {
-        chrome_height.clamp(0.0, 500.0)
-    };
-    *state
-        .width
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = width;
-    *state
-        .height
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = height;
-    *state
-        .chrome_height
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = top;
-
-    let active_id = state
-        .active_id
-        .lock()
-        .map_err(|_| "Aktiver Tab ist nicht verfügbar.".to_string())?
-        .clone();
-    if let Some(id) = active_id {
-        if let Some(view) = app.get_webview(&id) {
-            view.set_position(LogicalPosition::new(0.0, top))
-                .map_err(|error| error.to_string())?;
-            view.set_size(LogicalSize::new(width, (height - top).max(100.0)))
-                .map_err(|error| error.to_string())?;
-            view.show().map_err(|error| error.to_string())?;
-            view.set_focus().map_err(|error| error.to_string())?;
-        }
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, fullscreen, width, height, chrome_height);
+        return Ok(());
     }
-    Ok(())
+    #[cfg(not(target_os = "android"))]
+    {
+        let window = app
+            .get_window("main")
+            .ok_or("Das Veloce-Hauptfenster fehlt.")?;
+        window
+            .set_fullscreen(fullscreen)
+            .map_err(|error| format!("Fenstervollbild konnte nicht geändert werden: {error}"))?;
+
+        let measured = window.inner_size().ok();
+        let scale = window.scale_factor().unwrap_or(1.0).max(0.1);
+        let width = measured
+            .map(|size| size.width as f64 / scale)
+            .unwrap_or(width)
+            .clamp(200.0, 12000.0);
+        let height = measured
+            .map(|size| size.height as f64 / scale)
+            .unwrap_or(height)
+            .clamp(200.0, 12000.0);
+        let top = if fullscreen {
+            0.0
+        } else {
+            chrome_height.clamp(0.0, 500.0)
+        };
+        *state
+            .width
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = width;
+        *state
+            .height
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = height;
+        *state
+            .chrome_height
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = top;
+
+        let active_id = state
+            .active_id
+            .lock()
+            .map_err(|_| "Aktiver Tab ist nicht verfügbar.".to_string())?
+            .clone();
+        if let Some(id) = active_id {
+            if let Some(view) = app.get_webview(&id) {
+                view.set_position(LogicalPosition::new(0.0, top))
+                    .map_err(|error| error.to_string())?;
+                view.set_size(LogicalSize::new(width, (height - top).max(100.0)))
+                    .map_err(|error| error.to_string())?;
+                view.show().map_err(|error| error.to_string())?;
+                view.set_focus().map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -4284,20 +4679,30 @@ fn set_view_visible_blocking(
             .ok_or("Kein aktiver Tab vorhanden.")?;
         return activate_view(&app, &state, &id);
     }
-    let tabs = state
-        .tabs
-        .lock()
-        .map_err(|_| "Tabverwaltung ist nicht verfügbar.".to_string())?
-        .clone();
-    for tab in tabs {
-        if let Some(view) = app.get_webview(&tab.id) {
-            view.hide().map_err(|error| error.to_string())?;
+    #[cfg(target_os = "android")]
+    {
+        app.android_tabs().set_overlay(true).map_err(|error| {
+            format!("Android-Browseroberfläche konnte nicht eingeblendet werden: {error}")
+        })?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let tabs = state
+            .tabs
+            .lock()
+            .map_err(|_| "Tabverwaltung ist nicht verfügbar.".to_string())?
+            .clone();
+        for tab in tabs {
+            if let Some(view) = app.get_webview(&tab.id) {
+                view.hide().map_err(|error| error.to_string())?;
+            }
         }
+        if let Some(shell) = app.get_webview("main") {
+            shell.set_focus().map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
-    if let Some(shell) = app.get_webview("main") {
-        shell.set_focus().map_err(|error| error.to_string())?;
-    }
-    Ok(())
 }
 
 #[cfg(windows)]
@@ -4645,6 +5050,9 @@ fn save_settings_blocking(
     if !["graphite", "oled"].contains(&settings.theme.as_str()) {
         return Err("Dieses Erscheinungsbild ist ungültig.".into());
     }
+    if !["top", "bottom"].contains(&settings.address_bar_position.as_str()) {
+        return Err("Die Position der Browserleiste ist ungültig.".into());
+    }
     if !["violet", "cyan", "orange", "green"].contains(&settings.accent_color.as_str()) {
         return Err("Diese Akzentfarbe ist nicht unterstützt.".into());
     }
@@ -4662,6 +5070,9 @@ fn save_settings_blocking(
         previous_settings.password_autosave != settings.password_autosave;
     let resume_video_playback_changed =
         previous_settings.resume_video_playback != settings.resume_video_playback;
+    #[cfg(target_os = "android")]
+    let tracking_protection_changed =
+        previous_settings.tracking_protection != settings.tracking_protection;
     write_json(&app_dir(&app)?.join("settings.json"), &settings)?;
     *state
         .settings
@@ -4672,6 +5083,12 @@ fn save_settings_blocking(
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .clone();
+    #[cfg(target_os = "android")]
+    if tracking_protection_changed {
+        app.android_tabs()
+            .set_tracking_protection(settings.tracking_protection)
+            .map_err(|error| format!("Android-Schutz konnte nicht aktualisiert werden: {error}"))?;
+    }
     let active_id = state
         .active_id
         .lock()
@@ -4757,6 +5174,13 @@ fn save_settings_blocking(
                 .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
                 .is_some_and(|host| host == "youtube.com" || host.ends_with(".youtube.com"));
             if resume_video_playback_changed || is_youtube {
+                #[cfg(target_os = "android")]
+                if app.android_tabs().has_tab(&tab.id).unwrap_or(false) {
+                    app.android_tabs().eval(&tab.id, &script).map_err(|error| {
+                        format!("YouTube-Videoanpassung konnte nicht angewendet werden: {error}")
+                    })?;
+                }
+                #[cfg(not(target_os = "android"))]
                 if let Some(view) = app.get_webview(&tab.id) {
                     view.eval(script.clone()).map_err(|error| {
                         format!("YouTube-Videoanpassung konnte nicht angewendet werden: {error}")
@@ -4783,7 +5207,12 @@ async fn save_settings(
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    #[cfg(target_os = "android")]
+    let builder = tauri::Builder::default().plugin(tauri_plugin_android_tabs::init());
+    #[cfg(not(target_os = "android"))]
+    let builder = tauri::Builder::default();
+
+    builder
         .manage(AppState::default())
         .setup(|app| {
             let state = app.state::<AppState>().inner().clone();
@@ -4849,7 +5278,11 @@ pub fn run() {
             save_settings,
             set_panel_overlay,
             register_default_browser,
+            consume_android_external_url,
+            share_page,
             get_downloads,
+            report_android_page_state,
+            record_android_download,
             open_downloaded_file,
             clear_download_history,
             get_quick_shortcuts,
@@ -4929,6 +5362,7 @@ mod tests {
             r#"{"searchEngine":"brave","trackingProtection":true,"sleepAfterMinutes":4,"gamingMode":false,"reduceMotion":true}"#,
         ).unwrap();
         assert_eq!(settings.search_engine, "brave");
+        assert_eq!(settings.address_bar_position, "top");
         assert!(settings.memory_saver);
         assert!(settings.hardware_acceleration);
         assert!(settings.restore_session);

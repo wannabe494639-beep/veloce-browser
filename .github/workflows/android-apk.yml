@@ -1,0 +1,78 @@
+name: Android ARM64 APK
+
+on:
+  push:
+    branches:
+      - feature/android-port
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/android-apk.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/android-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  arm64-debug-apk:
+    name: Build Android ARM64 beta APK
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android API and NDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+
+      - name: Set up Rust for Android ARM64
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build ARM64 debug APK
+        run: npm run tauri -- android build --target aarch64 --apk --debug --ci
+
+      - name: Calculate APK checksum
+        run: sha256sum src-tauri/gen/android/app/build/outputs/apk/arm64/debug/*.apk > src-tauri/gen/android/app/build/outputs/apk/arm64/debug/SHA256SUMS.txt
+
+      - name: Upload test APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: veloce-android-arm64-debug-apk
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/arm64/debug/*.apk
+            src-tauri/gen/android/app/build/outputs/apk/arm64/debug/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14

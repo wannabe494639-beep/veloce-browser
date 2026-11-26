@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-setOverlay"
+description = "Enables the setOverlay command without any pre-configured scope."
+commands.allow = ["setOverlay"]
+
+[[permission]]
+identifier = "deny-setOverlay"
+description = "Denies the setOverlay command without any pre-configured scope."
+commands.deny = ["setOverlay"]

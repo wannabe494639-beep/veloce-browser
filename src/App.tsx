@@ -1,10 +1,10 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { addPluginListener, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   ArrowLeft, ArrowRight, AudioLines, Bookmark, Check,
   Compass, Download, ExternalLink, Globe2, Home, LockKeyhole,
-  MoreHorizontal, Pause, Plus, RefreshCw, Search, Settings2, ShieldCheck,
+  MoreHorizontal, Pause, Plus, RefreshCw, Search, Settings2, Share2, ShieldCheck,
   Sparkles, X, ZoomIn, ZoomOut,
 } from "lucide-react";
 
@@ -15,6 +15,7 @@ type BookmarkEntry = { id: string; title: string; url: string };
 type Panel = "more" | "settings" | "bookmarks" | "downloads" | null;
 type SettingsData = {
   searchEngine: string;
+  addressBarPosition: "top" | "bottom";
   trackingProtection: boolean;
   sleepAfterMinutes: number;
   gamingMode: boolean;
@@ -57,6 +58,10 @@ type YoutubeMetric = {
   resourceHost?: string; resourceType?: string; resourceDurationMs?: number;
   responseStatus?: number | null; transferBytes?: number; stallMs?: number;
 };
+type AndroidPageState = { id: string; url: string; title: string; loading: boolean; error?: string };
+type AndroidDownloadEvent = { id: string; fileName: string; path: string; startedAtMs: number; status: DownloadEntry["status"] };
+
+const IS_ANDROID_RUNTIME = /Android/i.test(navigator.userAgent);
 
 const YOUTUBE_METRIC_LABELS: Record<string, string> = {
   "page-start": "YouTube-Dokument gestartet",
@@ -80,7 +85,7 @@ const DEFAULT_SHORTCUTS: QuickShortcut[] = [
   { id: "github", label: "GitHub", url: "https://github.com/" },
 ];
 const DEFAULT_SETTINGS: SettingsData = {
-  searchEngine: "duckduckgo", trackingProtection: true,
+  searchEngine: "duckduckgo", addressBarPosition: "top", trackingProtection: true,
   sleepAfterMinutes: 3, gamingMode: false, reduceMotion: true,
   performanceProfile: "balanced", memorySaver: true,
   hardwareAcceleration: true, restoreSession: true, passwordAutosave: true,
@@ -191,10 +196,14 @@ export default function App() {
     width: window.innerWidth,
     height: window.innerHeight,
     chromeHeight: videoFullscreen ? 0 : (chromeRef.current?.getBoundingClientRect().height ?? 98),
-  }), [videoFullscreen]);
+    chromePosition: settings.addressBarPosition,
+  }), [settings.addressBarPosition, videoFullscreen]);
 
   const syncLayout = useCallback(() => {
-    void invoke("sync_layout", geometry()).catch((reason) => report(String(reason)));
+    const layout = geometry();
+    document.documentElement.style.setProperty("--chrome-height", `${layout.chromeHeight}px`);
+    document.documentElement.style.setProperty("--chrome-bottom", layout.chromePosition === "bottom" ? `${layout.chromeHeight}px` : "0px");
+    void invoke("sync_layout", layout).catch((reason) => report(String(reason)));
   }, [geometry, report]);
 
   const openTab = useCallback(async (input = START) => {
@@ -482,9 +491,36 @@ export default function App() {
             chromeHeight: full ? 0 : 96,
           }).catch((reason) => report(`Videovollbild konnte nicht angepasst werden: ${String(reason)}`));
         }),
+        ...(IS_ANDROID_RUNTIME ? [
+          addPluginListener<AndroidPageState>("android-tabs", "page-state", (payload) => {
+            void invoke("report_android_page_state", payload).catch((reason) => report(`Android-Seitenstatus konnte nicht gespeichert werden: ${String(reason)}`));
+          }),
+          addPluginListener<{ url: string }>("android-tabs", "new-tab", (payload) => { void openTab(payload.url); }),
+          addPluginListener<{ id: string; host: string }>("android-tabs", "navigation-blocked", (payload) => {
+            if (payload.id === activeIdRef.current) showToast("Tracker-Domainnavigation blockiert: " + payload.host);
+          }),
+          addPluginListener<{ fullscreen: boolean }>("android-tabs", "fullscreen", (payload) => {
+            setVideoFullscreen(payload.fullscreen);
+            void invoke("set_content_fullscreen", {
+              fullscreen: payload.fullscreen,
+              width: window.innerWidth,
+              height: window.innerHeight,
+              chromeHeight: payload.fullscreen ? 0 : (chromeRef.current?.getBoundingClientRect().height ?? 90),
+            }).catch((reason) => report(`Android-Vollbild konnte nicht aktualisiert werden: ${String(reason)}`));
+          }),
+          addPluginListener<AndroidDownloadEvent>("android-tabs", "download", (payload) => {
+            void invoke("record_android_download", payload).catch((reason) => report(`Android-Downloadstatus konnte nicht gespeichert werden: ${String(reason)}`));
+          }),
+          addPluginListener<{ message: string }>("android-tabs", "download-error", (payload) => report(payload.message)),
+          addPluginListener<{ url: string }>("android-tabs", "external-link", (payload) => { void openTab(payload.url); }),
+        ] : []),
       ]);
       for (const item of registrations) {
-        if (item.status === "fulfilled") stops.push(item.value);
+        if (item.status === "fulfilled") {
+          const listener = item.value;
+          if (typeof listener === "function") stops.push(listener);
+          else stops.push(() => { void listener.unregister(); });
+        }
         else report("Ein Browser-Ereignis konnte nicht registriert werden: " + String(item.reason));
       }
       if (!alive) { stops.forEach((stop) => stop()); return; }
@@ -507,6 +543,10 @@ export default function App() {
         } else {
           const tab = await invoke<Tab>("open_tab", { input: START, ...geometry() });
           setTabs([tab]); setActiveId(tab.id);
+        }
+        if (IS_ANDROID_RUNTIME) {
+          const externalUrl = await invoke<string | null>("consume_android_external_url");
+          if (externalUrl) await openTab(externalUrl);
         }
       } catch (reason) { report("Veloce konnte nicht gestartet werden: " + String(reason)); }
     })();
@@ -601,7 +641,7 @@ export default function App() {
   const currentSectionLabel = SETTING_SECTIONS.find(([key]) => key === settingsSection)?.[1] ?? "Allgemein";
   const isBookmarked = Boolean(activeTab && bookmarks.some((bookmark) => bookmark.url === activeTab.url));
 
-  return <main data-theme={settings.theme} data-accent={settings.accentColor} className={"app-shell" + (settings.reduceMotion ? " reduce-motion" : "") + (videoFullscreen ? " video-fullscreen" : "")}>
+  return <main data-theme={settings.theme} data-accent={settings.accentColor} data-address-position={IS_ANDROID_RUNTIME ? settings.addressBarPosition : "top"} className={"app-shell" + (settings.reduceMotion ? " reduce-motion" : "") + (videoFullscreen ? " video-fullscreen" : "") + (!isStart ? " page-active" : "") + (panel ? " panel-overlay-open" : "")}>
     <div ref={chromeRef} className="chrome">
       <div className="tabs-row">
         <button className="brand" type="button" onClick={() => void navigate(START)} aria-label="Veloce Startseite"><Logo/><span>Veloce</span></button>
@@ -677,6 +717,7 @@ export default function App() {
         <button type="button" onClick={() => { const tab = activeTab; if (tab) void invoke<boolean>("toggle_pin", { id: tab.id }).then((pinned) => setTabs((current) => current.map((item) => item.id === tab.id ? { ...item, pinned } : item))).catch((reason) => report(String(reason))); }}><Bookmark size={16}/>{activeTab?.pinned ? "Tab lösen" : "Tab anheften"}</button>
         <button type="button" onClick={() => void showPanel("settings")}><Settings2 size={16}/>Einstellungen</button>
         <button type="button" onClick={() => void showPanel("downloads")}><Download size={16}/>Downloads</button>
+        {IS_ANDROID_RUNTIME && activeTab && <button type="button" onClick={() => void invoke("share_page", { url: activeTab.url, title: activeTab.title || "Veloce" }).then(() => showPanel(null)).catch((reason) => report(`Teilen-Menü konnte nicht geöffnet werden: ${String(reason)}`))}><Share2 size={16}/>Seite teilen</button>}
         <button type="button" onClick={() => void showPanel("bookmarks")}><Bookmark size={16}/>Lesezeichen</button>
         <button type="button" onClick={openGooglePasswordManager}><LockKeyhole size={16}/>Google Passwortmanager</button>
         <div className="menu-divider"/>
@@ -713,6 +754,7 @@ export default function App() {
             </>}
             {settingsSection === "appearance" && <>
               <h2>Aussehen</h2>
+              {IS_ANDROID_RUNTIME && <label className="setting-row"><span><strong>Browserleiste</strong><small>Leiste für die Bedienung mit einer Hand oben oder unten platzieren.</small></span><select value={settings.addressBarPosition} onChange={(event) => changeSettings({addressBarPosition:event.target.value as SettingsData["addressBarPosition"]})}><option value="top">Oben</option><option value="bottom">Unten</option></select></label>}
               <label className="setting-row"><span><strong>Oberflächenstil</strong><small>Graphit nutzt dunkle Grautöne; OLED setzt auf nahezu reines Schwarz.</small></span><select value={settings.theme} onChange={(event) => changeSettings({theme:event.target.value as SettingsData["theme"]})}><option value="graphite">Graphit</option><option value="oled">OLED-Schwarz</option></select></label>
               <label className="setting-row"><span><strong>Akzentfarbe</strong><small>Ändert Hervorhebungen und Fokusfarben in Veloce.</small></span><select value={settings.accentColor} onChange={(event) => changeSettings({accentColor:event.target.value as SettingsData["accentColor"]})}><option value="violet">Violett</option><option value="cyan">Cyan</option><option value="orange">Orange</option><option value="green">Grün</option></select></label>
             </>}
@@ -763,6 +805,19 @@ export default function App() {
             </>}
             {settingsSection === "extensions" && <>
               <h2>Erweiterungen</h2>
+              {IS_ANDROID_RUNTIME ? <>
+                <p className="settings-explainer">Android System WebView unterstützt keine Chrome-Erweiterungen. uBlock Origin Lite, SponsorBlock und Chrome-Web-Store-Installationen werden auf Android nicht als installiert oder aktiv angezeigt.</p>
+                <div className="extension-list">
+                  {(extensionStatuses.length ? extensionStatuses : [
+                    {key:"ublock-origin-lite",id:"",name:"uBlock Origin Lite",bundledVersion:"2026.1116.1650",installed:false,enabled:false,removable:false,detail:"Nicht für Android System WebView verfügbar."},
+                    {key:"sponsorblock",id:"",name:"SponsorBlock",bundledVersion:"6.1.7",installed:false,enabled:false,removable:false,detail:"Nicht für Android System WebView verfügbar."},
+                  ]).map((extension) => <div className="extension-card" key={extension.key}>
+                    <div className="extension-card-heading"><strong>{extension.name}</strong><span className="extension-badge">Nicht unterstützt</span></div>
+                    <small>{extension.detail}</small>
+                  </div>)}
+                </div>
+                <div className="capability-note"><ShieldCheck size={16}/><span><strong>Native Filter sind begrenzt</strong><small>Die Android-Version nutzt die System-WebView ohne Extension-API. Der vorhandene Schutz blockiert nur bekannte Tracking-Domain-Navigationen und ersetzt keinen vollständigen uBlock-Filter oder SponsorBlock.</small></span></div>
+              </> : <>
               <p className="settings-explainer">Installations-, Aktivierungs- und Fehlerstatus werden direkt von WebView2 gelesen. Chrome-Web-Store-Installationen über dessen Webseite werden nicht vorgetäuscht.</p>
               <button type="button" className="extension-check" onClick={() => void openTab("https://chromewebstore.google.com/")}><ExternalLink size={14}/>Chrome Web Store durchsuchen</button>
               <p className="settings-explainer">Der Store kann zum Stöbern geöffnet werden. WebView2 akzeptiert Erweiterungen aus entpackten lokalen Ordnern; der Store-Button „Zu Chrome hinzufügen“ installiert nicht in Veloce. Prüfe die Runtime und Manifest-Berechtigungen vor dem Hinzufügen.</p>
@@ -782,6 +837,7 @@ export default function App() {
               <div className="extension-import"><input aria-label="Pfad des Erweiterungsordners" value={extensionFolder} onChange={(event) => { setExtensionFolder(event.target.value); setExtensionPreview(null); }} placeholder="C:\\Pfad\\zum\\Erweiterungsordner"/><button type="button" disabled={!extensionFolder.trim()} onClick={() => void inspectExtension()}>Prüfen</button></div>
               {extensionPreview && <div className="manifest-preview"><strong>{extensionPreview.name} · {extensionPreview.version} · Manifest {extensionPreview.manifestVersion}</strong><small>Berechtigungen: {extensionPreview.permissions.join(", ") || "keine deklariert"}</small><small>Webseitenzugriff: {extensionPreview.hostPermissions.join(", ") || "keine Host-Muster deklariert"}</small><button type="button" disabled={installingExtension} onClick={() => void installCustomExtension()}>{installingExtension ? "WebView2 installiert …" : "Nach Prüfung hinzufügen"}</button></div>}
               <div className="capability-note"><ShieldCheck size={16}/><span><strong>WebView2-Unterstützung</strong><small>Eigene Erweiterungen benötigen eine unterstützte WebView2-Runtime (Erweiterungs-API ab Runtime 120). Veloce kann Chrome-Web-Store-„Hinzufügen“-Buttons nicht als Chrome installieren. Erweiterungen erhalten nur die Berechtigungen ihres Manifests; installiere nur vertrauenswürdige Dateien.</small></span></div>
+              </>}
             </>}
           </div>
         </div>

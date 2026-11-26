@@ -1,5 +1,7 @@
 # Veloce Browser
 
+> Android development beta `0.1.5-beta.1` is in [`feature/android-port`](https://github.com/wannabe494639-beep/veloce-browser/tree/feature/android-port). An ARM64 debug APK builds locally, but Android runtime tests and a stable signing key are still missing. It is not yet a public website or release download. See [Android status, build steps, and limitations](docs/ANDROID_PORT.md). Windows and Linux releases remain separate.
+
 Veloce is a new, separate Tauri 2 browser project. It does not modify Astra's source, installation, or profile. The shell is React/TypeScript, the tab and navigation coordinator is Rust, and pages render in native child WebViews owned by the same application window.
 
 ## Included in this first build
