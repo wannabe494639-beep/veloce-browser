@@ -17,6 +17,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.PermissionRequest
@@ -118,6 +119,10 @@ class TrackingProtectionArgs { var enabled: Boolean = true }
 
 @TauriPlugin
 class AndroidTabsPlugin(private val activity: Activity) : Plugin(activity) {
+    private companion object {
+        const val TAG = "VeloceAndroidTabs"
+    }
+
     private data class DownloadRecord(val fileName: String, val startedAtMs: Long)
 
     private val tabs = LinkedHashMap<String, WebView>()
@@ -171,28 +176,63 @@ class AndroidTabsPlugin(private val activity: Activity) : Plugin(activity) {
     override fun load(webView: WebView) {
         super.load(webView)
         shell = webView
-        installLayout(webView)
-        registerFilePicker()
-        registerDownloadReceiver()
-        activity.intent?.let(::handleExternalIntent)
-        if (activity is AppCompatActivity) {
-            activity.onBackPressedDispatcher.addCallback(activity, object : OnBackPressedCallback(false) {
-                override fun handleOnBackPressed() {
-                    if (fullScreenView != null) {
-                        hideVideoFullscreen()
-                    } else {
-                        val current = activeTabId?.let { tabs[it] }
-                        if (current?.canGoBack() == true) {
-                            current.goBack()
-                            updateBackHandler()
-                        } else {
-                            isEnabled = false
-                            activity.onBackPressedDispatcher.onBackPressed()
-                            isEnabled = true
+        try {
+            if (!installLayout(webView)) {
+                // Tauri can call Plugin.load before the shell WebView is attached to
+                // the Activity's view tree. Retry after the first layout pass instead
+                // of throwing during application startup.
+                webView.post {
+                    try {
+                        if (!installLayout(webView)) {
+                            Log.e(TAG, "Native page container is still unavailable after the shell view was posted.")
                         }
+                    } catch (error: Exception) {
+                        Log.e(TAG, "Deferred browser layout initialization failed.", error)
                     }
                 }
-            }.also { backCallback = it })
+            }
+        } catch (error: Exception) {
+            Log.e(TAG, "Browser layout initialization failed; the app shell will remain available.", error)
+        }
+        try {
+            registerFilePicker()
+        } catch (error: Exception) {
+            // File selection is optional. A lifecycle timing issue here must not
+            // prevent the rest of the browser from opening.
+            Log.e(TAG, "File picker registration failed; uploads will be unavailable in this session.", error)
+        }
+        try {
+            registerDownloadReceiver()
+        } catch (error: Exception) {
+            Log.e(TAG, "Download completion notifications could not be registered.", error)
+        }
+        try {
+            activity.intent?.let(::handleExternalIntent)
+        } catch (error: Exception) {
+            Log.e(TAG, "Initial external link could not be processed.", error)
+        }
+        if (activity is AppCompatActivity) {
+            try {
+                activity.onBackPressedDispatcher.addCallback(activity, object : OnBackPressedCallback(false) {
+                    override fun handleOnBackPressed() {
+                        if (fullScreenView != null) {
+                            hideVideoFullscreen()
+                        } else {
+                            val current = activeTabId?.let { tabs[it] }
+                            if (current?.canGoBack() == true) {
+                                current.goBack()
+                                updateBackHandler()
+                            } else {
+                                isEnabled = false
+                                activity.onBackPressedDispatcher.onBackPressed()
+                                isEnabled = true
+                            }
+                        }
+                    }
+                }.also { backCallback = it })
+            } catch (error: Exception) {
+                Log.e(TAG, "Android back navigation integration could not be initialized.", error)
+            }
         }
     }
 
@@ -216,10 +256,11 @@ class AndroidTabsPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    private fun installLayout(webView: WebView) {
-        val parent = webView.parent as? ViewGroup
-            ?: throw IllegalStateException("Tauri-Oberfläche hat keinen nativen Android-Elternbereich.")
+    private fun installLayout(webView: WebView): Boolean {
+        if (root != null && pageLayer != null) return true
+        val parent = webView.parent as? ViewGroup ?: return false
         val index = parent.indexOfChild(webView)
+        if (index < 0) return false
         val originalParams = webView.layoutParams
         parent.removeView(webView)
 
@@ -230,6 +271,7 @@ class AndroidTabsPlugin(private val activity: Activity) : Plugin(activity) {
         parent.addView(container, index.coerceAtLeast(0), originalParams)
         root = container
         pageLayer = pages
+        return true
     }
 
     private fun registerFilePicker() {
@@ -271,6 +313,10 @@ class AndroidTabsPlugin(private val activity: Activity) : Plugin(activity) {
             require(args.id.isNotBlank()) { "Tab-ID fehlt." }
             require(args.url.startsWith("https://") || args.url.startsWith("http://")) { "Nur HTTP- und HTTPS-Adressen werden geöffnet." }
             if (tabs.containsKey(args.id)) return@result
+            val shellView = shell ?: throw IllegalStateException("Browseroberfläche ist noch nicht bereit.")
+            if (pageLayer == null && !installLayout(shellView)) {
+                throw IllegalStateException("Browserbereich wird noch initialisiert. Bitte erneut versuchen.")
+            }
             val density = activity.resources.displayMetrics.density
             viewportWidth = (args.width * density).toInt().coerceAtLeast(200)
             viewportHeight = (args.height * density).toInt().coerceAtLeast(200)

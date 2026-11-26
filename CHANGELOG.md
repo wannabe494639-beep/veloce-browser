@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.7-beta.1 — 2026-11-26
+
+- Harden Android startup so a temporarily unavailable native WebView parent or optional Android integration cannot immediately abort plugin initialization.
+- Log startup integration failures to Android logcat and report a clear error if a tab is requested before the native page container is ready.
+
 ## 0.1.6-beta.1 — 2026-11-26
 
 - Retry the Android ARM64 beta workflow with the current Android SDK setup action and only supported SDK package names.
