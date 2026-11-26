@@ -67,15 +67,31 @@ jobs:
       - name: Build ARM64 debug APK
         run: npm run tauri -- android build --target aarch64 --apk --debug --ci
 
-      - name: Calculate APK checksum
-        run: sha256sum src-tauri/gen/android/app/build/outputs/apk/arm64/debug/*.apk > src-tauri/gen/android/app/build/outputs/apk/arm64/debug/SHA256SUMS.txt
+      - name: Verify ARM64 APK and calculate checksum
+        shell: bash
+        run: |
+          mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' | sort)
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            printf 'Expected one debug APK; found %s\n' "${#apks[@]}" >&2
+            printf '%s\n' "${apks[@]}" >&2
+            exit 1
+          fi
+
+          apk="${apks[0]}"
+          aapt="$ANDROID_HOME/build-tools/36.0.0/aapt"
+          badging="$($aapt dump badging "$apk")"
+          grep -Fq "package: name='com.veloce.browser'" <<<"$badging"
+          grep -Fq 'arm64-v8a' <<<"$badging"
+
+          artifact_dir='src-tauri/gen/android/app/build/outputs/apk/ci-artifact'
+          mkdir -p "$artifact_dir"
+          cp "$apk" "$artifact_dir/veloce-android-arm64-debug.apk"
+          sha256sum "$artifact_dir/veloce-android-arm64-debug.apk" > "$artifact_dir/SHA256SUMS.txt"
 
       - name: Upload test APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: veloce-android-arm64-debug-apk
-          path: |
-            src-tauri/gen/android/app/build/outputs/apk/arm64/debug/*.apk
-            src-tauri/gen/android/app/build/outputs/apk/arm64/debug/SHA256SUMS.txt
+          path: src-tauri/gen/android/app/build/outputs/apk/ci-artifact/*
           if-no-files-found: error
           retention-days: 14

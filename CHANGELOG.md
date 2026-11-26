@@ -4,6 +4,7 @@
 
 - Retry the Android ARM64 beta workflow with the current Android SDK setup action and only supported SDK package names.
 - Mark the shared Rust application entry point with Tauri's required mobile entry-point macro so Android's JNI runtime symbols are exported.
+- Verify the ARM64 ABI in Tauri's generated APK and collect its actual output path before uploading the test artifact.
 - Advance the Android beta package version so future test builds can install as a newer application version.
 
 ## 0.1.5-beta.1 — 2026-11-26
