@@ -1,0 +1,97 @@
+name: Android beta release
+
+on:
+  push:
+    tags:
+      - "android-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  android-arm64-beta:
+    name: Build and publish Android ARM64 beta
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+
+      - name: Install Android API and NDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+
+      - name: Set up Rust for Android ARM64
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build ARM64 debug APK
+        run: npm run tauri -- android build --target aarch64 --apk --debug --ci
+
+      - name: Verify APK and prepare release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' | sort)
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            printf 'Expected one debug APK; found %s\n' "${#apks[@]}" >&2
+            printf '%s\n' "${apks[@]}" >&2
+            exit 1
+          fi
+
+          apk="${apks[0]}"
+          aapt="$ANDROID_HOME/build-tools/36.0.0/aapt"
+          badging="$("$aapt" dump badging "$apk")"
+          grep -Fq "package: name='com.veloce.browser'" <<<"$badging"
+          grep -Fq 'arm64-v8a' <<<"$badging"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$apk"
+
+          mkdir -p release
+          cp "$apk" release/Veloce-Android-ARM64-debug.apk
+          (cd release && sha256sum Veloce-Android-ARM64-debug.apk > SHA256SUMS.txt)
+          git archive --format=zip --prefix=Veloce-Android/ --output=release/Veloce-Android-Source.zip "$GITHUB_SHA"
+
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#android-v}"
+          notes_file="release/RELEASE-NOTES.txt"
+          cat > "$notes_file" <<'EOF'
+          Android ARM64 development beta for testing.
+
+          This APK is debug-signed and is not a Play Store or production release. It has not been validated on a physical Android device or emulator. Install only for testing. Android System WebView does not support the desktop Chrome extensions, uBlock Origin Lite, or SponsorBlock integration in this build.
+
+          The Android version is published separately so the existing Windows and Linux release assets remain unchanged.
+          EOF
+          gh release create "$GITHUB_REF_NAME" \
+            release/Veloce-Android-ARM64-debug.apk \
+            release/SHA256SUMS.txt \
+            release/Veloce-Android-Source.zip \
+            --target "$GITHUB_SHA" \
+            --title "Veloce Browser Android ${version} (ARM64 Beta)" \
+            --prerelease \
+            --notes-file "$notes_file"
