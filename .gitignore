@@ -18,6 +18,16 @@ target/
 # src-tauri/extensions and their notices under src-tauri/licenses stay tracked.
 src-tauri/extension-staging/
 
+# Android's generated project copies desktop-only bundled extensions on init.
+# Android System WebView cannot load Chrome extensions; keep those desktop
+# packages out of the Android source assets and APK.
+src-tauri/gen/android/.tauri/
+src-tauri/gen/android/app/build/
+src-tauri/gen/android/buildSrc/build/
+src-tauri/gen/android/buildSrc/.kotlin/
+src-tauri/gen/android/app/src/main/assets/extensions/
+src-tauri/gen/android/app/src/main/assets/licenses/extensions/
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

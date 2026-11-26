@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-activateTab"
+description = "Enables the activateTab command without any pre-configured scope."
+commands.allow = ["activateTab"]
+
+[[permission]]
+identifier = "deny-activateTab"
+description = "Denies the activateTab command without any pre-configured scope."
+commands.deny = ["activateTab"]

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-openDownload"
+description = "Enables the openDownload command without any pre-configured scope."
+commands.allow = ["openDownload"]
+
+[[permission]]
+identifier = "deny-openDownload"
+description = "Denies the openDownload command without any pre-configured scope."
+commands.deny = ["openDownload"]

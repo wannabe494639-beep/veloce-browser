@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-sharePage"
+description = "Enables the sharePage command without any pre-configured scope."
+commands.allow = ["sharePage"]
+
+[[permission]]
+identifier = "deny-sharePage"
+description = "Denies the sharePage command without any pre-configured scope."
+commands.deny = ["sharePage"]

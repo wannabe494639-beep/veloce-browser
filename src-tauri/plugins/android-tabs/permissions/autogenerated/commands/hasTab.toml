@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-hasTab"
+description = "Enables the hasTab command without any pre-configured scope."
+commands.allow = ["hasTab"]
+
+[[permission]]
+identifier = "deny-hasTab"
+description = "Denies the hasTab command without any pre-configured scope."
+commands.deny = ["hasTab"]

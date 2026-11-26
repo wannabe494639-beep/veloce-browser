@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-evalScript"
+description = "Enables the evalScript command without any pre-configured scope."
+commands.allow = ["evalScript"]
+
+[[permission]]
+identifier = "deny-evalScript"
+description = "Denies the evalScript command without any pre-configured scope."
+commands.deny = ["evalScript"]

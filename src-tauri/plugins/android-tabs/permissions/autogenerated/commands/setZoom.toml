@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-setZoom"
+description = "Enables the setZoom command without any pre-configured scope."
+commands.allow = ["setZoom"]
+
+[[permission]]
+identifier = "deny-setZoom"
+description = "Denies the setZoom command without any pre-configured scope."
+commands.deny = ["setZoom"]
