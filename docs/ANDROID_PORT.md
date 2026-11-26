@@ -1,6 +1,6 @@
 # Veloce Android port: inventory and implementation plan
 
-Status: Android port implemented on `feature/android-port` as development beta `0.1.6-beta.1`. The frontend, shared Rust layer, ARM64 Rust target and Android ARM64 debug APK build locally. GitHub CI's first attempt failed while setup-android requested the removed legacy `tools` package; the workflow has been corrected and is being rerun. No device/emulator runtime verification or stable release signing has been done, so this is not a public release download.
+Status: Android port implemented on `feature/android-port` as development beta `0.1.6-beta.1`. The frontend, shared Rust layer, ARM64 Rust target and Android ARM64 debug APK build locally. GitHub CI exposed and now tracks two integration fixes: the removed legacy Android SDK `tools` package and the Tauri mobile entry-point macro. The corrected workflow is being rerun. No device/emulator runtime verification or stable release signing has been done, so this is not a public release download.
 
 ## Existing implementation
 

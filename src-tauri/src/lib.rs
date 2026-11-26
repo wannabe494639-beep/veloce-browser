@@ -5206,6 +5206,7 @@ async fn save_settings(
     .await
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "android")]
     let builder = tauri::Builder::default().plugin(tauri_plugin_android_tabs::init());

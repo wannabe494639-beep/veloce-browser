@@ -3,6 +3,7 @@
 ## 0.1.6-beta.1 — 2026-11-26
 
 - Retry the Android ARM64 beta workflow with the current Android SDK setup action and only supported SDK package names.
+- Mark the shared Rust application entry point with Tauri's required mobile entry-point macro so Android's JNI runtime symbols are exported.
 - Advance the Android beta package version so future test builds can install as a newer application version.
 
 ## 0.1.5-beta.1 — 2026-11-26
