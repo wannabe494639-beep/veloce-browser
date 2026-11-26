@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6-beta.1 — 2026-11-26
+
+- Retry the Android ARM64 beta workflow with the current Android SDK setup action and only supported SDK package names.
+- Advance the Android beta package version so future test builds can install as a newer application version.
+
 ## 0.1.5-beta.1 — 2026-11-26
 
 - Add the first ARM64 Android port using Android System WebView in a Kotlin tab adapter with the shared Tauri/Rust and React/TypeScript application.
