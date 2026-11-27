@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6 — 2026-11-27
+
+- Publish the current Windows browser build as a stable release.
+- Use Windows system fonts for clearer browser controls and slightly larger text in key controls and settings.
+- Reduce the blur used by floating panels to keep the UI lighter to composite.
+- No measured YouTube startup-time or RAM improvement is claimed in this release.
+
 ## 0.1.6-beta.1 — 2026-11-26
 
 - Retry the Android ARM64 beta workflow with the current Android SDK setup action and only supported SDK package names.

@@ -3851,7 +3851,7 @@ dependencies = [
 
 [[package]]
 name = "veloce-browser"
-version = "0.1.6-beta.1"
+version = "0.1.6"
 dependencies = [
  "serde",
  "serde_json",
